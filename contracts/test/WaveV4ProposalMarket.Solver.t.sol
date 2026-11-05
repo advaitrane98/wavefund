@@ -141,7 +141,10 @@ contract WaveV4ProposalMarketSolverTest is WaveBase {
                 // the pool can absorb roughly 8.95x the seed notional before the tick limit
                 assertApproxEqRel(consumed, SEED * SCALE * 895 / 100, 0.02e18, "~8.95x seed absorbed");
 
-                // the executing trade reports the identical pair
+                // the executing trade reports the identical pair. It must be FUNDED (push-model): an unfunded call
+                // would revert with InsufficientPushedTokens before the depth check. A reverted call keeps the push,
+                // so later iterations on the same market are still funded (pushed only ever grows here).
+                qr.mintLegs(address(adapter), R, p, credits * SCALE, credits * SCALE);
                 bytes4 tsel = long_ ? adapter.tradeBuyLong.selector : adapter.tradeBuyShort.selector;
                 (bool ok2, bytes memory ret2) = _callAsRound(abi.encodeWithSelector(tsel, R, p, credits, 0, alice));
                 assertFalse(ok2);
@@ -200,9 +203,18 @@ contract WaveV4ProposalMarketSolverTest is WaveBase {
         vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.InsufficientDepth.selector, input, input - 1));
         qr.buy(alice, R, p, credits, long_, 0);
 
-        // control: the exact expected delta passes through the same mocked path and pays the quote
+        // control: the exact expected delta passes through the same mocked path and pays the quote.
+        // The mocked PoolManager never moves tokens, so make it deliver what a real swap would: the swap output
+        // (expOut of the bought leg) is minted to the adapter. Without it the adapter would pay the user `q` out of
+        // its idle seed inventory, which push-funding correctly rejects (AccountingViolation). The swapped-in leg is
+        // not taken by the mock pool, so that leg's `input` stays as absorbed surplus (no violation).
+        qr.mintLegs(address(adapter), R, p, long_ ? expOut : 0, long_ ? 0 : expOut);
         _mockSwapDelta(zeroForOne, -int128(int256(input)), int128(int256(expOut)));
         assertEq(qr.buy(alice, R, p, credits, long_, q), q, "control: matching delta succeeds");
+        assertEq(_bal(long_ ? _long(R, p) : _short(R, p), alice), q, "user received exactly the quote");
+        (uint256 hl, uint256 hs) = adapter.accountedBalances(R, p);
+        assertEq(hl, _bal(_long(R, p), address(adapter)), "held long re-synced");
+        assertEq(hs, _bal(_short(R, p), address(adapter)), "held short re-synced");
         vm.clearMockedCalls();
     }
 

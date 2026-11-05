@@ -86,7 +86,16 @@ Proposers (not QuantumRound) call `registerAgent(string name)` (name 1..64 bytes
 
 ### 4.1 General rules for every call
 - **Push model.** QuantumRound sends tokens to the adapter BEFORE calling. The adapter never pulls from anyone and never mints or burns.
-- **The adapter does NOT check that the tokens arrived.** It simply uses its own balance. The adapter always holds the idle seed sets (see `seedLiquidity`) in the same token contracts, so an under-funded call can silently spend them. QuantumRound must push exactly the documented amount, every time.
+- **The market enforces the push.** For every market it keeps accounted ("held") LONG and SHORT balances: the idle seed sets, any pending sell remainder, and any surplus it has absorbed. The tokens QuantumRound has newly pushed are `balanceOf(adapter) - held`, per leg. At the start of every seed, buy and sell, the market requires the newly pushed amount to cover what the call needs:
+  - seed: `creditAmount * 1e12` of BOTH legs
+  - buy: `credits * 1e12` of BOTH legs
+  - sell: `amountIn` of the SOLD leg only (pushing the other leg does not count)
+
+  Otherwise the call reverts `InsufficientPushedTokens(roundId, proposalId, needed, received)` (it reports the first failing leg; the LONG leg is checked first). Nothing has changed at that point.
+- **Only newly pushed tokens fund a call.** The idle seed sets and pending sell remainders are never spent by a trade; each trade also re-checks that the balances did not fall below the held amounts (`AccountingViolation(roundId, proposalId)`, which should be unreachable in normal use).
+- **Extra tokens are ignored, not lost.** Tokens sent to the market beyond what a call needs (by QuantumRound or by anyone else) do not break anything. They count as "pushed" for the next call's check, are absorbed into the held balances after that call, and come back with everything else at `finalizeProposal`. A donation can fund only itself; it can never fund more than its own amount.
+- The check runs after the cheap validations (zero `to`, market seeded and not finalized, no pending sell) and before the quote, slippage and depth logic. A zero amount still reverts `ZeroAmount`.
+- Read the held balances with `accountedBalances(r, p) returns (uint256 longHeld, uint256 shortHeld)`.
 - **No partial trades.** If the pool cannot absorb a trade completely (the price would pass the position edge), the call reverts `InsufficientDepth(requestedIn, consumedIn)`. Nothing is filled partly.
 - **Trading window.** Swaps and liquidity adds revert outside `tradingStart <= now < tradingEnd`. The revert comes from the hook and is wrapped by the PoolManager (`WrappedError` ... `TradingNotOpen`). Quote functions revert `TradingClosed(start, end, now)` instead.
 - `r` = roundId, `p` = proposalId (both `uint256`). A market is one (r, p) pair.
@@ -96,7 +105,7 @@ Proposers (not QuantumRound) call `registerAgent(string name)` (name 1..64 bytes
 
 Before the call QuantumRound must have: created the tokens (2.1), minted `creditAmount * 1e12` of BOTH LONG and SHORT to the adapter, and be able to answer `marketTiming(r, p)` (section 6). It must be called while the window is open (`tradingStart <= now < tradingEnd`).
 
-Revert order: `WiringIncomplete()`, `ZeroAmount()`, `CreditDecimalsMismatch(actual)`, `AlreadySeeded(r,p)`, `MarketNotFound(r,p)` (tokens missing), then failures from `marketTiming`, from the hook's `registerPool` (`InvalidTradingWindow`, `InvalidFinalWindow`, bad config) and from the liquidity add (window closed). `creditAmount * 1e12` must fit in uint128.
+Revert order: `WiringIncomplete()`, `ZeroAmount()`, `CreditDecimalsMismatch(actual)`, `AlreadySeeded(r,p)`, `MarketNotFound(r,p)` (tokens missing), `InsufficientPushedTokens(r,p,needed,received)` (fewer than `creditAmount * 1e12` of either leg newly pushed), then failures from `marketTiming`, from the hook's `registerPool` (`InvalidTradingWindow`, `InvalidFinalWindow`, bad config) and from the liquidity add (window closed). `creditAmount * 1e12` must fit in uint128.
 
 What it does: reads `marketTiming` once (the timing is then fixed for that market), registers the pool in the hook, initialises the pool at 1:1 (if someone pre-initialised it at another price while empty, it is moved back to 1:1), and adds liquidity `L = creditAmount * 1e12`.
 
@@ -110,7 +119,7 @@ Before the call QuantumRound must have taken `creditAmount` credits from the buy
 - The opposite leg (SHORT for a LONG buy) is swapped, exact input `creditAmount * 1e12`, for the wanted leg.
 - `totalOut = creditAmount * 1e12 + swapOutput`, in raw units of the wanted token, sent directly to `to`.
 - `minOut` is in raw units of the wanted token and is compared with `totalOut`; below it reverts `Slippage(minOut, totalOut)`.
-- Reverts: `ZeroAddress` (`to == 0`), `ZeroAmount` (`creditAmount == 0`), `MarketNotSeeded(r,p)`, `AlreadyFinalized(r,p)`, `InsufficientDepth`, `Slippage`, and the wrapped hook error outside the window. A pending sell does NOT block a buy.
+- Reverts: `ZeroAddress` (`to == 0`), `ZeroAmount` (`creditAmount == 0`), `MarketNotSeeded(r,p)`, `AlreadyFinalized(r,p)`, `InsufficientPushedTokens(r,p,needed,received)` (fewer than `creditAmount * 1e12` of either leg newly pushed), `InsufficientDepth`, `Slippage`, and the wrapped hook error outside the window. A pending sell does NOT block a buy, and the pending remainder cannot fund it.
 - Event `Trade(r, p, isBuy=true, isLong, amountIn = creditAmount, amountOut = totalOut, to)`.
 
 ### 4.4 Sell (two calls, one transaction)
@@ -121,7 +130,7 @@ Before the call QuantumRound must have moved `amountIn` raw units of the SOLD to
 - The adapter swaps only part of the input (found by an exact bisection) so that the unswapped remainder pairs with the swap output into complete sets.
 - `creditsOut` = whole credits matched = `floor(min(remaining, swapOutput) / 1e12)`.
 - `minCreditsOut` is in credits; below it reverts `Slippage(minCreditsOut, creditsOut)`.
-- It stores ONE pending settlement for this market and returns. Reverts also: `ZeroAmount`, `MarketNotSeeded`, `AlreadyFinalized`, `PendingRemainder(r,p)` (an earlier sell was not consumed), `InsufficientDepth`, `SolverDidNotConverge()` (amountIn above 1e6 x 2^64 raw units), wrapped hook error outside the window.
+- It stores ONE pending settlement for this market and returns. Reverts also: `ZeroAmount`, `MarketNotSeeded`, `AlreadyFinalized`, `PendingRemainder(r,p)` (an earlier sell was not consumed), `InsufficientPushedTokens(r,p,needed,received)` (fewer than `amountIn` of the sold leg newly pushed), `InsufficientDepth`, `SolverDidNotConverge()` (amountIn above 1e6 x 2^64 raw units), wrapped hook error outside the window.
 - Event `Trade(r, p, isBuy=false, isLong, amountIn, amountOut = creditsOut, msg.sender)`.
 
 `consumeSellSettlement(uint256 r, uint256 p, address seller) returns (uint256 credits, uint256 longDust, uint256 shortDust)`: `onlyQuantumRound`.
@@ -137,7 +146,7 @@ Before the call QuantumRound must have moved `amountIn` raw units of the SOLD to
 
 - Reverts: `MarketNotSeeded`, `AlreadyFinalized`, `TradingNotEnded()` (needs `now >= tradingEnd`), `PendingRemainder`.
 - Removes all liquidity from the pool, then transfers the adapter's ENTIRE balance of LONG and of SHORT for this market to the caller. Emits `ProposalFinalized(r, p, longReturned, shortReturned)`; read those two numbers from the event (or from balance changes).
-- The returned amounts are one lump per leg and are NOT split. They contain: the pool position at the final price, the 0.3% trading fees earned, and the idle seed sets (about 10.08% of the seed per leg). The unused seed portion is therefore not a separate amount: it must be recovered from these totals.
+- The returned amounts are one lump per leg and are NOT split. This is the market's entire LONG and SHORT balance, so any unsolicited tokens sent to the market are included. The held balances are zero afterwards. They contain: the pool position at the final price, the 0.3% trading fees earned, and the idle seed sets (about 10.08% of the seed per leg). The unused seed portion is therefore not a separate amount: it must be recovered from these totals.
 - The two legs generally differ in size. The part that can be turned back into reserve right away is the complete sets `min(longReturned, shortReturned)` (burn that many of each; each 1e12 of both legs is 1 credit). The rest is a one-sided LONG or SHORT amount whose value depends on the round outcome. How this goes back to the reserve is a C3 decision.
 - After finalization no further trading or liquidity actions are possible for that market.
 
@@ -191,7 +200,7 @@ Bonds: proposer approves the registry for USDC -> `lockBond(proposer, amount)` -
 
 ## 8. Hazards to design around
 
-1. Under-funded push is not detected (4.1). Always push the exact amount.
+1. An under-funded push now reverts `InsufficientPushedTokens` and spends nothing (4.1). Still push exactly the required tokens before every call; surplus is locked in the market until `finalizeProposal`.
 2. A forgotten `consumeSellSettlement` locks the market's sells and finalization (4.4).
 3. Buys can happen while a sell is pending, with the pool already moved.
 4. Refunds may be deferred (3.2); a proposer's bond can sit in `pendingRefund`.
@@ -212,7 +221,7 @@ The original C3 spec is not in this repository or in my working notes, so I coul
 6. `finalizeProposal` returns nothing and sends one lump per leg to the caller (4.5).
 7. Sells are two steps and must be completed in one transaction, with the dust returned to the seller (4.4).
 8. No partial fills: large trades revert (4.1).
-9. Tokens are pushed to the adapter beforehand, and nothing verifies it (4.1).
+9. Tokens must be pushed to the adapter beforehand, and the market enforces it with `InsufficientPushedTokens` (4.1).
 10. The trading window is half-open `[start, end)`, the seed must happen inside it, and timing is read from `marketTiming` only once (6).
 11. pLong is confined to `[0.01, 0.99]` (5).
 12. The adapter's ownership goes to QuantumRound after wiring, but no owner function remains (1).

@@ -224,6 +224,10 @@ contract WaveV4ProposalMarketEconomicsTest is WaveBase {
     // ------------------------------------------------------------------ depth limits
     function test_HugeBuyAndSellRevertInsufficientDepth() public {
         // pool can absorb ~8.9x seed in input before the +-45900 tick limit is reached
+        // Push-funding: the adapter now rejects an unfunded call with InsufficientPushedTokens BEFORE it reaches the
+        // depth check, so fund the full complete-set input of both legs first. The (reverted) first buy leaves the
+        // push in place, so the same funding also covers the second buy; the depth revert is what is asserted.
+        qr.mintLegs(address(adapter), R, P, SEED * 100 * SCALE, SEED * 100 * SCALE);
         vm.startPrank(address(qr));
         vm.expectPartialRevert(WaveV4ProposalMarket.InsufficientDepth.selector);
         adapter.tradeBuyLong(R, P, SEED * 100, 0, alice);

@@ -27,6 +27,10 @@ import {ProposalTokens} from "./ProposalTokens.sol";
 /// @title WaveV4ProposalMarket
 /// @notice Push-funded LONG/SHORT complete-set market with one immutable-range v4 position per proposal.
 /// @dev QuantumRound supplies all tokens before calls and performs all minting/burning outside this adapter.
+///      The adapter enforces push funding: only balances above each market's held balances may fund a trade.
+///      Held balances protect idle seed inventory, pending sell remainders, and surplus absorbed after trades.
+///      InsufficientPushedTokens reports the first underfunded leg; unsolicited surplus is absorbed after a trade
+///      and all remaining tokens are returned at finalization.
 ///      The hook exclusively authorizes this adapter's swaps and liquidity changes. No native currency is used.
 /// @custom:upgrade-strategy immutable
 contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, ReentrancyGuard {
@@ -70,6 +74,9 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
         bool closed;
         uint256 pLongTwap;
         uint256 priceTwap;
+        /// @dev Accounted idle inventory, pending sell remainders, and absorbed surplus, in token units.
+        uint256 heldLong;
+        uint256 heldShort;
     }
 
     enum Action { SWAP, ADD, REMOVE, REPAIR }
@@ -135,6 +142,10 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
     error UnexpectedSwapDelta(int256 expected, int256 actual);
     error UnexpectedRepairDelta();
     error UnexpectedCallback();
+    /// @notice Newly pushed tokens on the first failing leg do not cover the required trade or seed amount.
+    error InsufficientPushedTokens(uint256 roundId, uint256 proposalId, uint256 needed, uint256 received);
+    /// @notice A token balance fell below the market's accounted inventory.
+    error AccountingViolation(uint256 roundId, uint256 proposalId);
 
     event QuantumRoundSet(address indexed quantumRound);
     event WaveHookSet(address indexed waveHook);
@@ -201,6 +212,8 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
         if (long_ == address(0) || short_ == address(0)) revert MarketNotFound(roundId, proposalId);
         m.longToken = long_;
         m.shortToken = short_;
+        uint256 needed = creditAmount * COMPLETE_SET_SCALE;
+        _requirePushed(m, roundId, proposalId, needed, needed);
         m.longIsCurrency0 = long_ < short_;
         m.key = PoolKey({
             currency0: Currency.wrap(m.longIsCurrency0 ? long_ : short_),
@@ -220,6 +233,7 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
         uint128 liquidity = (creditAmount * COMPLETE_SET_SCALE).toUint128();
         m.positionLiquidity = liquidity;
         poolManager.unlock(abi.encode(CallbackData(Action.ADD, m.key, false, 0, 0, liquidity)));
+        _sync(m);
         m.seeded = true;
         emit MarketSeeded(roundId, proposalId, m.id, creditAmount, liquidity);
     }
@@ -258,6 +272,8 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
         _transfer(m.shortToken, msg.sender, burnAmount);
         _transfer(m.longToken, seller, pending.longDust);
         _transfer(m.shortToken, seller, pending.shortDust);
+        m.heldLong -= burnAmount + pending.longDust;
+        m.heldShort -= burnAmount + pending.shortDust;
         emit SellSettlementConsumed(r, p, seller, pending.credits, pending.longDust, pending.shortDust);
         return (pending.credits, pending.longDust, pending.shortDust);
     }
@@ -275,7 +291,17 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
         uint256 shortBalance = IERC20(m.shortToken).balanceOf(address(this));
         _transfer(m.longToken, msg.sender, longBalance);
         _transfer(m.shortToken, msg.sender, shortBalance);
+        m.heldLong = 0;
+        m.heldShort = 0;
         emit ProposalFinalized(r, p, longBalance, shortBalance);
+    }
+
+    /// @notice Returns accounted LONG/SHORT inventory in token units, excluding unabsorbed pushes.
+    /// @dev Includes idle seed inventory, pending sell remainders, and surplus absorbed after trades.
+    ///      Uses the seeded-market validation shared by other market views; finalized markets return zero.
+    function accountedBalances(uint256 r, uint256 p) external view returns (uint256 longHeld, uint256 shortHeld) {
+        Market storage m = _seededMarket(r, p);
+        return (m.heldLong, m.heldShort);
     }
 
     /// @notice Quotes all LONG received, including the unswapped complete-set leg.
@@ -399,13 +425,19 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
     {
         if (to == address(0)) revert ZeroAddress();
         Market storage m = _liveMarket(r, p);
+        uint256 input = credits * COMPLETE_SET_SCALE;
+        _requirePushed(m, r, p, input, input);
+        uint256 heldLongBefore = m.heldLong;
+        uint256 heldShortBefore = m.heldShort;
         totalOut = _quoteBuy(m, credits, buyLong);
         if (totalOut < minOut) revert Slippage(minOut, totalOut);
-        uint256 input = credits * COMPLETE_SET_SCALE;
         bool zeroForOne = buyLong != m.longIsCurrency0;
         uint256 output = _executeSwap(m, zeroForOne, input);
         if (output != totalOut - input) revert UnexpectedSwapDelta((totalOut - input).toInt256(), output.toInt256());
         _transfer(buyLong ? m.longToken : m.shortToken, to, totalOut);
+        if (IERC20(m.longToken).balanceOf(address(this)) < heldLongBefore
+            || IERC20(m.shortToken).balanceOf(address(this)) < heldShortBefore) revert AccountingViolation(r, p);
+        _sync(m);
         emit Trade(r, p, true, buyLong, credits, totalOut, to);
     }
 
@@ -422,11 +454,17 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
     {
         Market storage m = _liveMarket(r, p);
         if (m.pending.active) revert PendingRemainder(r, p);
+        _requirePushed(m, r, p, sellLong ? amountIn : 0, sellLong ? 0 : amountIn);
+        uint256 heldLongBefore = m.heldLong;
+        uint256 heldShortBefore = m.heldShort;
         SellResult memory result = _solveSell(m, amountIn, sellLong);
         if (result.credits < minCredits) revert Slippage(minCredits, result.credits);
         uint256 output = _executeSwap(m, sellLong == m.longIsCurrency0, result.swapInput);
         if (output != result.swapOutput) revert UnexpectedSwapDelta(result.swapOutput.toInt256(), output.toInt256());
         m.pending = PendingSell(true, result.credits, result.longDust, result.shortDust);
+        if (IERC20(m.longToken).balanceOf(address(this)) < heldLongBefore
+            || IERC20(m.shortToken).balanceOf(address(this)) < heldShortBefore) revert AccountingViolation(r, p);
+        _sync(m);
         emit Trade(r, p, false, sellLong, amountIn, result.credits, msg.sender);
         return result.credits;
     }
@@ -558,6 +596,30 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
         } else if (delta > 0) {
             poolManager.take(currency, address(this), uint256(int256(delta)));
         }
+    }
+
+    /// @dev IDs are supplied because Market does not store them, so accounting errors identify the market.
+    function _pushed(Market storage m, uint256 r, uint256 p)
+        private view returns (uint256 pushedLong, uint256 pushedShort)
+    {
+        uint256 longBalance = IERC20(m.longToken).balanceOf(address(this));
+        uint256 shortBalance = IERC20(m.shortToken).balanceOf(address(this));
+        if (longBalance < m.heldLong || shortBalance < m.heldShort) revert AccountingViolation(r, p);
+        return (longBalance - m.heldLong, shortBalance - m.heldShort);
+    }
+
+    function _requirePushed(Market storage m, uint256 r, uint256 p, uint256 neededLong, uint256 neededShort)
+        private view
+    {
+        (uint256 pushedLong, uint256 pushedShort) = _pushed(m, r, p);
+        if (neededLong > 0 && pushedLong < neededLong) revert InsufficientPushedTokens(r, p, neededLong, pushedLong);
+        if (neededShort > 0 && pushedShort < neededShort) revert InsufficientPushedTokens(r, p, neededShort, pushedShort);
+    }
+
+    /// @dev Absorbs surplus into protected inventory; finalization returns the entire balance.
+    function _sync(Market storage m) private {
+        m.heldLong = IERC20(m.longToken).balanceOf(address(this));
+        m.heldShort = IERC20(m.shortToken).balanceOf(address(this));
     }
 
     function _transfer(address token, address to, uint256 amount) private {
