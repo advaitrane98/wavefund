@@ -4,7 +4,7 @@ import type { Decision, Proposal, Round, SimState, Vault } from "./types";
 
 export const START_USDC = 10_000;
 export const FAUCET_USDC = 1_000;
-export const POOL_DEPTH = 500;
+export const POOL_DEPTH = 5_000;
 export const MARGIN = 0.005;
 export const R_MIN = -0.1;
 export const R_MAX = 0.1;
