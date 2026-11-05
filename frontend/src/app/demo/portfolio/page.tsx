@@ -1,13 +1,17 @@
-import { ComingSoon, DemoPage } from "@/components/DemoPage";
+import { DemoPage } from "@/components/DemoPage";
+import { PortfolioView } from "@/components/portfolio/PortfolioView";
+import { WorkspaceGate } from "@/components/WorkspaceGate";
 
 export default function PortfolioPage() {
   return (
     <DemoPage
       eyebrow="Demo · Portfolio"
       title="Portfolio"
-      description="Your deposits, claims and payouts across rounds."
+      description="Your balances, deposits, credits and positions, with what you can redeem per round."
     >
-      <ComingSoon>The portfolio view is built in the next task.</ComingSoon>
+      <WorkspaceGate>
+        <PortfolioView />
+      </WorkspaceGate>
     </DemoPage>
   );
 }
