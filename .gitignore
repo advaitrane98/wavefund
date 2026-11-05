@@ -1,0 +1,13 @@
+# Secrets: never commit
+.env
+.env.*
+!.env.example
+
+# Foundry
+out/
+cache/
+broadcast/
+
+# Misc
+node_modules
+.DS_Store
