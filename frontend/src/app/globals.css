@@ -131,6 +131,61 @@ p {
   }
 }
 
+/* Market cards and the collapse animation. */
+.market-card {
+  position: relative;
+  transition:
+    opacity 700ms ease,
+    filter 700ms ease,
+    transform 700ms ease,
+    border-color 500ms ease,
+    box-shadow 700ms ease,
+    background-color 700ms ease;
+}
+
+.market-card[data-state="collapsing"] {
+  animation: collapse-pulse 0.9s ease-in-out infinite;
+}
+
+.market-card[data-state="erased"] {
+  opacity: 0.45;
+  filter: grayscale(1);
+  transform: scale(0.985);
+}
+
+.market-card[data-state="winner"] {
+  border-color: var(--green);
+  background: linear-gradient(180deg, var(--green-soft), var(--surface) 55%);
+  box-shadow:
+    0 0 0 1px var(--green),
+    0 0 36px var(--green-soft);
+}
+
+.erased-stamp {
+  opacity: 0;
+  transform: rotate(-8deg) scale(1.35);
+  transition:
+    opacity 500ms ease 450ms,
+    transform 500ms ease 450ms;
+  pointer-events: none;
+}
+
+.market-card[data-state="erased"] .erased-stamp {
+  opacity: 1;
+  transform: rotate(-8deg) scale(1);
+}
+
+@keyframes collapse-pulse {
+  0%,
+  100% {
+    border-color: var(--border);
+  }
+  50% {
+    border-color: var(--violet);
+    box-shadow: 0 0 0 1px var(--violet-soft);
+  }
+}
+
 @keyframes pulse-dot {
   0%,
   100% {
