@@ -11,3 +11,8 @@ broadcast/
 # Misc
 node_modules
 .DS_Store
+
+# Circle credentials and recovery files, wallet keystores: never commit
+.circle/
+recovery_file*
+keystore/

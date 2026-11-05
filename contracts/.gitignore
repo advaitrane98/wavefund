@@ -9,3 +9,4 @@ lib/**/out/
 lib/**/cache/
 lib/**/broadcast/
 lib/**/node_modules/
+!.env.example
