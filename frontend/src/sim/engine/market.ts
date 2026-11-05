@@ -79,7 +79,6 @@ export function trade(
     const held = side === "LONG" ? pos.long : pos.short;
     if (amount > held + 1e-9) fail(`You only hold ${held.toFixed(4)} ${side} here.`);
   }
-  if (quote.out < quote.minOut) fail("Price moved beyond 0.5% slippage.");
 
   const s = clone(prev);
   const p = s.round.proposals[index];
