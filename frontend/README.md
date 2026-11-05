@@ -4,6 +4,10 @@ The web app for wavefund: quantum markets that let a DAO or onchain treasury pic
 
 Built with [Arc Studio](https://studio.arc.io)
 
+## Mock mode
+
+With "Use mock data" selected, the whole app runs in your browser with no chain access. Connect a demo account (10,000 demo USDC, plus a faucet), deposit once into a round, claim credits per proposal, trade LONG and SHORT, collapse the round, settle with a return, and redeem. The vault page shows NAV, allocation, oracle vs pool price, queued flows and decision history. Progress is saved in local storage; use **Reset demo** to start over. Agents and past decisions shown in mock mode are illustrative.
+
 ## Tech stack
 
 Next.js 15 (App Router), React, TypeScript, Tailwind CSS, viem (no wagmi). Deployed on Vercel.
