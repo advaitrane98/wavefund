@@ -1,13 +1,17 @@
-import { ComingSoon, DemoPage } from "@/components/DemoPage";
+import { AgentsView } from "@/components/agents/AgentsView";
+import { DemoPage } from "@/components/DemoPage";
+import { WorkspaceGate } from "@/components/WorkspaceGate";
 
 export default function AgentsPage() {
   return (
     <DemoPage
       eyebrow="Demo · Agents"
       title="Agents"
-      description="The agents competing to manage the treasury, and how the market has judged them."
+      description="The agents that compete to manage the treasury."
     >
-      <ComingSoon>The agents view is built in the next task.</ComingSoon>
+      <WorkspaceGate>
+        <AgentsView />
+      </WorkspaceGate>
     </DemoPage>
   );
 }
