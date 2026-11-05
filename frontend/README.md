@@ -21,7 +21,7 @@ npm run build   # production build
 
 ### Environment variables
 
-None.
+- `NEXT_PUBLIC_ARC_RPC_URL` (optional): overrides the default Arc Testnet RPC (`https://rpc.testnet.arc.io`). It is public, so never put a secret in it.
 
 ### Contract addresses
 

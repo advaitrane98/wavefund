@@ -32,9 +32,12 @@ export const erc20BalanceAbi = [
   },
 ] as const;
 
+/** Public RPC override for the browser. Falls back to the Arc testnet default. */
+const rpcUrl = process.env.NEXT_PUBLIC_ARC_RPC_URL || arcTestnet.rpcUrls.default.http[0];
+
 export const publicClient = createPublicClient({
   chain: arcTestnet,
-  transport: http(),
+  transport: http(rpcUrl),
 });
 
 export const explorerAddressUrl = (address: string) =>
