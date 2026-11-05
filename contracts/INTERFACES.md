@@ -229,3 +229,38 @@ The original C3 spec is not in this repository or in my working notes, so I coul
 14. Counters in the registry revert at uint32 max (3.1).
 
 Please paste the C3 spec so I can turn this section into a precise conflict list.
+
+## 10. C3 as implemented (QuantumRound, Resolver, WavefundVault)
+
+Describes `QuantumRound.sol`, `Resolver.sol` and `WavefundVault.sol` as they are in `contracts/src`. If the code and this section disagree, the code wins.
+
+### 10.1 Wiring
+- Deploy order: PoolManager, ProposalTokens (`setCreditDecimals(6)`), ProposerRegistry, adapter + hook, QuantumRound, oracle, vault, Resolver.
+- Grant `QUANTUM_ROUND_ROLE` to QuantumRound on ProposalTokens and ProposerRegistry. Call `adapter.setQuantumRound` and `adapter.setWaveHook`.
+- QuantumRound roles: `KEEPER_ROLE` (keeper), `VAULT_ROLE` (vault), `RESOLVER_ROLE` (Resolver). Then `setAllocationSource(vault)`.
+- Resolver: grant its `RESOLVER_ROLE` to the vault. Vault: `setRound(quantumRound, resolver)` (once, checks `resolver.quantumRound()`), `grantRole(KEEPER_ROLE, keeper)`, `initializePool(sqrtPriceX96)` (or initialise the pool elsewhere).
+- Admin funds the reserve with `addProtocolLiquiditySeed` (USDC approval to QuantumRound) and bootstraps the vault with `fundVault`.
+
+### 10.2 Round lifecycle (QuantumRound)
+Trading, then Collapsed, then Settled; or Collapsed, then Cancelled. Credits are 6 decimals and equal raw USDC.
+- `openRound(tradingEnd, horizon, rMin, rMax, twapWindow)`: all `uint256`. Round ids start at 1. Proposal 0 takes `allocationSource.currentTEthBps()`.
+- `propose(roundId, Allocation{uint16 tEthBps}, rationale)`: locks `registry.DEFAULT_BOND()` (1 USDC). The proposer approves the REGISTRY, not QuantumRound.
+- `marketTiming(roundId, proposalId)` returns `(tradingStart, tradingEnd, twapWindow)`, the signature the adapter calls. It is not the one-argument form.
+- `claimCredits` is capped per proposal: `creditsClaimed[r][p][user] <= deposits[r][user]`.
+- `collapse`: the best proposal (lowest id on ties) wins only if its TWAP is strictly above proposal 0's plus `EPSILON`. Every market is finalised, losing seeds return to `protocolLiquiditySeed`, and every bond is refunded (a failed refund transfer becomes a pending refund in the registry).
+- `settle`: `RESOLVER_ROLE` after `evaluationEnd`. Anyone after `evaluationEnd + 2 days`, but then the supplied value is IGNORED and the round settles at the midpoint of `[rMin, rMax]`.
+- `redeem` and `redeemFor(roundId, user)`: only the winning proposal's tokens count and they are burned. The payout always goes to `user`. A failed transfer becomes `pendingPayout`, collected with `claimPayout()`. `redeemFor(address(quantumRound))` reverts.
+- `releaseSeed`: reverts until nobody can still claim, and does nothing if already released. LONG/SHORT below 1e12 raw (the pool manager's rounding dust) is not a liability. Anyone can clear a depositor with `redeemFor`.
+
+### 10.3 Vault
+- Shares: WAVE, 18 decimals. NAV uses ACCOUNTED balances (`totalVaultUsdc`, `totalVaultTEth`), so donations do not move the share price and can be rescued.
+- Queue: `requestDeposit`, `requestWithdraw` and their cancels join the current epoch. `executeTrade` prices the whole epoch as one batch at the pre-flow NAV and supply. Users then collect with `claimFor(user)`, which anyone can call and which only ever pays `user`. A failed USDC transfer becomes `claimableUsdc`, collected with `claimUsdc()`.
+- `executeTrade(roundId, winnerTEthBps)`: keeper only, round collapsed, before `evaluationEnd`, oracle at most 5 minutes old, and the given bps must equal the winner's. Proposal 0 winning means no rebalance swap. A swap more than 500 bps worse than the oracle-implied output rolls back everything in the step, leaves the queues untouched and cancels the round.
+- `cancelUnexecutedRound(roundId)`: anyone, once `evaluationEnd` has passed without an execution.
+- Withdrawals that need tETH are bought with an exact-output swap. If even the guarded price needs more tETH than the vault holds, all tETH is sold and the loss is shared by all shares.
+- `reportReturn(roundId)`: after `evaluationEnd`, with an oracle update at or after it that is still fresh, and within one day. `R = NAV now / NAV at decision`. After the window, the round's emergency settle applies. `fundVault` is blocked while a decided round awaits its report.
+
+### 10.4 Known limits
+- Keepers must call `redeemFor` and `claimFor` for users who do not act, if they want the seed back promptly.
+- A single batch keeps tETH exposure only up to the guarded price: near-total exits sell all tETH.
+- The keeper chooses when to execute inside the window, so the evaluation horizon can be shortened by up to its length.
