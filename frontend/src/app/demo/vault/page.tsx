@@ -1,13 +1,17 @@
-import { ComingSoon, DemoPage } from "@/components/DemoPage";
+import { DemoPage } from "@/components/DemoPage";
+import { VaultView } from "@/components/vault/VaultView";
+import { WorkspaceGate } from "@/components/WorkspaceGate";
 
 export default function VaultPage() {
   return (
     <DemoPage
       eyebrow="Demo · Vault"
       title="Vault"
-      description="The treasury vault, its holdings and the actions it has executed."
+      description="The treasury vault: what it holds, how it is priced, and every decision the market has made."
     >
-      <ComingSoon>The vault view is built in the next task.</ComingSoon>
+      <WorkspaceGate>
+        <VaultView />
+      </WorkspaceGate>
     </DemoPage>
   );
 }
