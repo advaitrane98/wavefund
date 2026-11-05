@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Newsreader } from "next/font/google";
+import { Footer } from "@/components/Footer";
+import { Header } from "@/components/Header";
+import { Providers } from "@/components/Providers";
 import "./globals.css";
+
+// Applies the saved theme before first paint to avoid a flash.
+const themeInitScript = `try{var t=localStorage.getItem("wavefund:theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}`;
 
 const newsreader = Newsreader({
   subsets: ["latin"],
@@ -38,7 +44,16 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${newsreader.variable} ${plexSans.variable} ${plexMono.variable}`}
     >
-      <body>{children}</body>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
+      <body>
+        <Providers>
+          <Header />
+          <main>{children}</main>
+          <Footer />
+        </Providers>
+      </body>
     </html>
   );
 }
