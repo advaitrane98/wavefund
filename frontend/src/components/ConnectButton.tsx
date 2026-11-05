@@ -1,6 +1,8 @@
 "use client";
 
 import { shortAddress } from "@/lib/chain";
+import { DemoConnectButton } from "./DemoConnectButton";
+import { usePreferences } from "./PreferencesProvider";
 import { useWallet } from "./WalletProvider";
 
 function formatUsdc(value: string | null): string {
@@ -9,7 +11,13 @@ function formatUsdc(value: string | null): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** Mock mode connects the in-browser demo account; on-chain mode connects a wallet. */
 export function ConnectButton() {
+  const { dataMode } = usePreferences();
+  return dataMode === "mock" ? <DemoConnectButton /> : <WalletConnectButton />;
+}
+
+function WalletConnectButton() {
   const { address, usdcBalance, wrongNetwork, connecting, error, connect, disconnect } =
     useWallet();
 
