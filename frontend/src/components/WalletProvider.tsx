@@ -6,63 +6,78 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
-import { formatUnits, getAddress, numberToHex } from "viem";
-import {
-  USDC_ADDRESS,
-  USDC_DECIMALS,
-  arcTestnet,
-  erc20BalanceAbi,
-  publicClient,
-} from "@/lib/chain";
-
-type Eip1193Provider = {
-  request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
-  on?: (event: string, handler: (...args: never[]) => void) => void;
-  removeListener?: (event: string, handler: (...args: never[]) => void) => void;
-};
+import { erc20Abi, getAddress, type EIP1193Provider, type Hash } from "viem";
+import { ARC_CHAIN_ID_HEX, USDC_ADDRESS, arcTestnet } from "@/lib/chain";
+import { getPublicClient, setWalletTransport } from "@/lib/live/client";
+import { classifyError } from "@/lib/live/errors";
+import { sendContractTx, type TxRequest } from "@/lib/live/tx";
 
 declare global {
   interface Window {
-    ethereum?: Eip1193Provider;
+    ethereum?: EIP1193Provider;
   }
 }
 
+interface ProviderDetail {
+  info: { uuid: string; name: string; rdns: string };
+  provider: EIP1193Provider;
+}
+
+export type WalletErrorKind =
+  | "no-wallet"
+  | "rejected"
+  | "pending"
+  | "wrong-network"
+  | "other";
+
+export interface WalletError {
+  kind: WalletErrorKind;
+  message: string;
+}
+
 const CONNECTED_KEY = "wavefund:wallet-connected";
+const METAMASK_RDNS = "io.metamask";
 
 type WalletState = {
   address: `0x${string}` | null;
-  /** USDC balance in the ERC-20 view (6 decimals), formatted. */
-  usdcBalance: string | null;
   chainId: number | null;
-  wrongNetwork: boolean;
+  onArc: boolean;
+  /** ERC-20 USDC balance, raw (6 decimals). */
+  usdcBalance: bigint | null;
   connecting: boolean;
-  error: string | null;
-  hasProvider: boolean;
+  error: WalletError | null;
+  providerName: string | null;
   connect: () => Promise<void>;
+  switchToArc: () => Promise<void>;
   disconnect: () => void;
+  refreshBalance: () => Promise<void>;
+  clearError: () => void;
+  /** Simulate, broadcast and confirm a contract call, then refresh the balance. */
+  send: (req: TxRequest) => Promise<Hash>;
 };
 
 const WalletContext = createContext<WalletState | null>(null);
 
-async function switchToArc(provider: Eip1193Provider) {
-  const chainIdHex = numberToHex(arcTestnet.id);
+/** wallet_switchEthereumChain, falling back to wallet_addEthereumChain on 4902. */
+async function ensureArc(provider: EIP1193Provider): Promise<void> {
   try {
     await provider.request({
       method: "wallet_switchEthereumChain",
-      params: [{ chainId: chainIdHex }],
+      params: [{ chainId: ARC_CHAIN_ID_HEX }],
     });
   } catch (err) {
     const code = (err as { code?: number }).code;
-    if (code !== 4902 && code !== -32603) throw err;
+    if (code !== 4902) throw err;
     await provider.request({
       method: "wallet_addEthereumChain",
       params: [
         {
-          chainId: chainIdHex,
-          chainName: arcTestnet.name,
-          nativeCurrency: arcTestnet.nativeCurrency,
+          chainId: ARC_CHAIN_ID_HEX,
+          chainName: "Arc Testnet",
+          nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
           rpcUrls: arcTestnet.rpcUrls.default.http,
           blockExplorerUrls: [arcTestnet.blockExplorers.default.url],
         },
@@ -71,125 +86,250 @@ async function switchToArc(provider: Eip1193Provider) {
   }
 }
 
+function toWalletError(err: unknown): WalletError {
+  const { kind, message } = classifyError(err);
+  if (kind === "rejected") return { kind: "rejected", message };
+  if (kind === "pending") return { kind: "pending", message };
+  return { kind: "other", message };
+}
+
 export function WalletProvider({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const [address, setAddress] = useState<`0x${string}` | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
-  const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
+  const [usdcBalance, setUsdcBalance] = useState<bigint | null>(null);
   const [connecting, setConnecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hasProvider, setHasProvider] = useState(false);
+  const [error, setError] = useState<WalletError | null>(null);
+  const [providerName, setProviderName] = useState<string | null>(null);
 
-  const refreshBalance = useCallback(async (account: `0x${string}`) => {
+  const discovered = useRef(new Map<string, ProviderDetail>());
+  const active = useRef<EIP1193Provider | null>(null);
+  const addressRef = useRef<`0x${string}` | null>(null);
+  const detach = useRef<(() => void) | null>(null);
+
+  const onArc = chainId === arcTestnet.id;
+
+  const refreshBalance = useCallback(async () => {
+    const account = addressRef.current;
+    if (!account) return;
     try {
-      const raw = await publicClient.readContract({
+      const raw = await getPublicClient().readContract({
         address: USDC_ADDRESS,
-        abi: erc20BalanceAbi,
+        abi: erc20Abi,
         functionName: "balanceOf",
         args: [account],
       });
-      setUsdcBalance(formatUnits(raw, USDC_DECIMALS));
+      setUsdcBalance(raw);
     } catch {
-      setUsdcBalance(null);
+      // Keep the last known balance rather than blanking the header.
     }
   }, []);
 
-  const readChain = useCallback(async (provider: Eip1193Provider) => {
-    const hex = (await provider.request({ method: "eth_chainId" })) as string;
-    setChainId(Number.parseInt(hex, 16));
+  const pickProvider = useCallback((): { provider: EIP1193Provider; name: string } | null => {
+    const all = [...discovered.current.values()];
+    const metamask = all.find(
+      (d) => d.info.rdns === METAMASK_RDNS || /metamask/i.test(d.info.name),
+    );
+    const chosen = metamask ?? all[0];
+    if (chosen) return { provider: chosen.provider, name: chosen.info.name };
+    if (window.ethereum) return { provider: window.ethereum, name: "Browser wallet" };
+    return null;
   }, []);
 
   const applyAccounts = useCallback(
     (accounts: string[]) => {
       if (accounts.length === 0) {
+        addressRef.current = null;
         setAddress(null);
         setUsdcBalance(null);
         window.localStorage.removeItem(CONNECTED_KEY);
         return;
       }
       const next = getAddress(accounts[0]);
+      addressRef.current = next;
       setAddress(next);
-      void refreshBalance(next);
+      void refreshBalance();
     },
     [refreshBalance],
   );
 
-  // Detect an injected wallet and silently restore a previous connection.
+  const applyChain = useCallback(
+    (id: number) => {
+      setChainId(id);
+      // Read through the wallet only while it is on Arc; otherwise use the public RPC.
+      setWalletTransport(id === arcTestnet.id ? active.current : null);
+      void refreshBalance();
+    },
+    [refreshBalance],
+  );
+
+  const attach = useCallback(
+    async (provider: EIP1193Provider, name: string) => {
+      detach.current?.();
+      active.current = provider;
+      setProviderName(name);
+      const onAccounts = (accounts: string[]) => applyAccounts(accounts);
+      const onChain = (hex: string) => applyChain(Number.parseInt(hex, 16));
+      provider.on?.("accountsChanged", onAccounts as never);
+      provider.on?.("chainChanged", onChain as never);
+      detach.current = () => {
+        provider.removeListener?.("accountsChanged", onAccounts as never);
+        provider.removeListener?.("chainChanged", onChain as never);
+      };
+      const hex = (await provider.request({ method: "eth_chainId" })) as string;
+      applyChain(Number.parseInt(hex, 16));
+    },
+    [applyAccounts, applyChain],
+  );
+
+  // EIP-6963 discovery, then silently restore a previous connection.
   useEffect(() => {
-    const provider = window.ethereum;
-    if (!provider) return;
-    setHasProvider(true);
+    const onAnnounce = (event: Event) => {
+      const detail = (event as CustomEvent<ProviderDetail>).detail;
+      if (detail?.info?.uuid) discovered.current.set(detail.info.uuid, detail);
+    };
+    window.addEventListener("eip6963:announceProvider", onAnnounce);
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
 
-    const onAccounts = (accounts: string[]) => applyAccounts(accounts);
-    const onChain = (hex: string) => setChainId(Number.parseInt(hex, 16));
-    provider.on?.("accountsChanged", onAccounts as never);
-    provider.on?.("chainChanged", onChain as never);
-
-    if (window.localStorage.getItem(CONNECTED_KEY) === "1") {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (cancelled || window.localStorage.getItem(CONNECTED_KEY) !== "1") return;
+      const picked = pickProvider();
+      if (!picked) return;
       void (async () => {
-        const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
+        const accounts = (await picked.provider.request({ method: "eth_accounts" })) as string[];
+        if (cancelled) return;
+        await attach(picked.provider, picked.name);
         applyAccounts(accounts);
-        await readChain(provider);
       })().catch(() => undefined);
-    }
+    }, 150);
 
     return () => {
-      provider.removeListener?.("accountsChanged", onAccounts as never);
-      provider.removeListener?.("chainChanged", onChain as never);
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("eip6963:announceProvider", onAnnounce);
     };
-  }, [applyAccounts, readChain]);
+  }, [applyAccounts, attach, pickProvider]);
 
-  // Keep the balance fresh while connected.
+  // Keep the header balance fresh while the tab is visible.
   useEffect(() => {
     if (!address) return;
-    const id = window.setInterval(() => void refreshBalance(address), 15_000);
+    const tick = () => {
+      if (!document.hidden) void refreshBalance();
+    };
+    const id = window.setInterval(tick, 30_000);
     return () => window.clearInterval(id);
   }, [address, refreshBalance]);
 
   const connect = useCallback(async () => {
-    const provider = window.ethereum;
-    if (!provider) {
-      setError("No browser wallet found. Install a wallet extension to connect.");
+    setError(null);
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    const picked = pickProvider();
+    if (!picked) {
+      setError({
+        kind: "no-wallet",
+        message: "No browser wallet found. Install MetaMask or another EVM wallet, then try again.",
+      });
       return;
     }
     setConnecting(true);
-    setError(null);
     try {
-      const accounts = (await provider.request({
+      const accounts = (await picked.provider.request({
         method: "eth_requestAccounts",
       })) as string[];
-      await switchToArc(provider);
-      await readChain(provider);
+      await attach(picked.provider, picked.name);
+      await ensureArc(picked.provider);
+      const hex = (await picked.provider.request({ method: "eth_chainId" })) as string;
+      applyChain(Number.parseInt(hex, 16));
       window.localStorage.setItem(CONNECTED_KEY, "1");
       applyAccounts(accounts);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Wallet connection failed";
-      setError(message);
+      setError(toWalletError(err));
     } finally {
       setConnecting(false);
     }
-  }, [applyAccounts, readChain]);
+  }, [applyAccounts, applyChain, attach, pickProvider]);
+
+  const switchToArc = useCallback(async () => {
+    const provider = active.current;
+    if (!provider) return;
+    setError(null);
+    try {
+      await ensureArc(provider);
+      const hex = (await provider.request({ method: "eth_chainId" })) as string;
+      applyChain(Number.parseInt(hex, 16));
+    } catch (err) {
+      setError(toWalletError(err));
+    }
+  }, [applyChain]);
 
   const disconnect = useCallback(() => {
     window.localStorage.removeItem(CONNECTED_KEY);
+    addressRef.current = null;
     setAddress(null);
     setUsdcBalance(null);
+    setError(null);
   }, []);
+
+  const send = useCallback(
+    async (req: TxRequest): Promise<Hash> => {
+      const provider = active.current;
+      const account = addressRef.current;
+      if (!provider || !account) throw new Error("Connect your wallet first.");
+      const hex = (await provider.request({ method: "eth_chainId" })) as string;
+      if (Number.parseInt(hex, 16) !== arcTestnet.id) {
+        throw new Error("Your wallet is on the wrong network. Switch to Arc testnet.");
+      }
+      const hash = await sendContractTx(provider, account, req);
+      void refreshBalance();
+      return hash;
+    },
+    [refreshBalance],
+  );
+
+  const wrongNetworkError = useMemo<WalletError | null>(
+    () =>
+      address && chainId !== null && !onArc
+        ? {
+            kind: "wrong-network",
+            message: "Your wallet is on the wrong network. Switch to Arc testnet to continue.",
+          }
+        : null,
+    [address, chainId, onArc],
+  );
 
   const value = useMemo<WalletState>(
     () => ({
       address,
-      usdcBalance,
       chainId,
-      wrongNetwork: address !== null && chainId !== null && chainId !== arcTestnet.id,
+      onArc,
+      usdcBalance,
+      connecting,
+      error: error ?? wrongNetworkError,
+      providerName,
+      connect,
+      switchToArc,
+      disconnect,
+      refreshBalance,
+      clearError: () => setError(null),
+      send,
+    }),
+    [
+      address,
+      chainId,
+      onArc,
+      usdcBalance,
       connecting,
       error,
-      hasProvider,
+      wrongNetworkError,
+      providerName,
       connect,
+      switchToArc,
       disconnect,
-    }),
-    [address, usdcBalance, chainId, connecting, error, hasProvider, connect, disconnect],
+      refreshBalance,
+      send,
+    ],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
