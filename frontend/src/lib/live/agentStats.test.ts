@@ -92,3 +92,55 @@ describe("forecaster stats", () => {
     expect(forecasterStatsOf(A, ev, new Set([1n])).trades).toBe(0);
   });
 });
+
+import { encodeAbiParameters, encodeEventTopics, getAbiItem } from "viem";
+import { quantumRoundAbi } from "@/abis";
+import { buildAgentStats } from "./agentStats";
+import type { ExplorerLog } from "./explorer";
+
+const MOMENTUM = "0x927751387951B69390151f34f3dD756A624Abc0D" as Address;
+const QUANT = "0x66617018c7d91e1345eA9F51b44a062aad2D439e" as Address;
+
+function rawLog(name: string, args: Record<string, unknown>, block: bigint): ExplorerLog {
+  const item = getAbiItem({ abi: quantumRoundAbi, name } as never) as unknown as {
+    inputs: { name: string; type: string; indexed: boolean }[];
+  };
+  const topics = encodeEventTopics({ abi: quantumRoundAbi, eventName: name, args } as never);
+  const data = item.inputs.filter((i) => !i.indexed);
+  return {
+    address: A,
+    blockNumber: block,
+    logIndex: n++,
+    timeStamp: 0n,
+    topics: topics as Hex[],
+    data: data.length
+      ? encodeAbiParameters(
+          data as never,
+          data.map((i) => args[i.name]) as never,
+        )
+      : "0x",
+    transactionHash: `0x${block.toString(16).padStart(64, "0")}` as Hex,
+  };
+}
+
+describe("buildAgentStats from encoded logs", () => {
+  test("decodes real event encodings end to end", () => {
+    const logs = [
+      rawLog("ProposalCreated", { roundId: 1n, proposalId: 1n, proposer: MOMENTUM, tEthBps: 6000, rationale: "Trend is up." }, 10n),
+      rawLog("Deposited", { roundId: 1n, user: QUANT, amount: 8_000_000n }, 11n),
+      rawLog("Bought", { roundId: 1n, proposalId: 1n, user: QUANT, isLong: true, credits: 1_000_000n, tokensOut: 2n }, 12n),
+      rawLog("Collapsed", { roundId: 1n, winnerId: 1n, probabilities: [500000000000000000n, 600000000000000000n] }, 13n),
+      rawLog("RoundSettled", { roundId: 1n, realisedReturn: e18(1.05), pi: e18(0.7), emergency: false }, 14n),
+      rawLog("Redeemed", { roundId: 1n, user: QUANT, payout: 9_000_000n }, 15n),
+    ];
+    const s = buildAgentStats(logs, [{ proposalsMade: 1, roundsWon: 1, name: "Momentum" }, null, null]);
+    const m = s.proposers[MOMENTUM.toLowerCase()];
+    expect(m.latestRationale?.text).toBe("Trend is up.");
+    expect(m.avgWinningReturn).toBeCloseTo(0.05, 10);
+    expect(m.roundsWon).toBe(1);
+    const q = s.forecasters[QUANT.toLowerCase()];
+    expect(q.pnl).toBe(1_000_000n);
+    expect(q.trades).toBe(1);
+    expect(q.roundsParticipated).toBe(1);
+  });
+});

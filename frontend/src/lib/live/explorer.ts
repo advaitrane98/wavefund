@@ -29,25 +29,48 @@ interface RawLog {
 
 export interface LogQuery {
   address: Address;
-  topic0: Hex;
+  /** Omit to read every event of the contract in one request (the explorer's free tier allows few requests). */
+  topic0?: Hex;
   /** Indexed address filters, by topic position (1 to 3). */
   topics?: Partial<Record<1 | 2 | 3, Address>>;
   fromBlock: bigint;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const MAX_ATTEMPTS = 4;
+const MAX_ATTEMPTS = 3;
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 5;
 
-/** Raw logs for one event. Retries 429s and network errors with exponential backoff. */
+/** Thrown on HTTP 429. Not retried: the free tier's window is long, so callers fall back instead. */
+export class ExplorerRateLimited extends Error {
+  constructor() {
+    super("Explorer API rate limit reached");
+    this.name = "ExplorerRateLimited";
+  }
+}
+
+/** All logs for a query, up to MAX_PAGES pages. Retries 5xx and network errors with exponential backoff. */
 export async function fetchLogs(q: LogQuery): Promise<ExplorerLog[]> {
+  const all: ExplorerLog[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const batch = await fetchPage(q, page);
+    all.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+  }
+  return all;
+}
+
+async function fetchPage(q: LogQuery, page: number): Promise<ExplorerLog[]> {
   const params = new URLSearchParams({
     module: "logs",
     action: "getLogs",
     fromBlock: q.fromBlock.toString(),
     toBlock: "latest",
     address: q.address,
-    topic0: q.topic0,
+    page: String(page),
+    offset: String(PAGE_SIZE),
   });
+  if (q.topic0) params.set("topic0", q.topic0);
   for (const [pos, addr] of Object.entries(q.topics ?? {})) {
     if (!addr) continue;
     params.set(`topic${pos}`, pad(addr, { size: 32 }).toLowerCase());
@@ -58,8 +81,8 @@ export async function fetchLogs(q: LogQuery): Promise<ExplorerLog[]> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       const res = await fetch(`${BASE}/api?${params.toString()}`);
-      if (res.status === 429 || res.status >= 500) throw new Error(`Explorer API ${res.status}`);
-      if (!res.ok) throw new Error(`Explorer API ${res.status}`);
+      if (res.status === 429) throw new ExplorerRateLimited();
+      if (res.status >= 500) throw new Error(`Explorer API ${res.status}`);
       const body = (await res.json()) as { status?: string; message?: string; result?: unknown };
       if (!Array.isArray(body.result)) {
         // "No logs found" / "No records found" come back as an empty, non-array result.
@@ -76,6 +99,7 @@ export async function fetchLogs(q: LogQuery): Promise<ExplorerLog[]> {
         transactionHash: l.transactionHash as Hex,
       }));
     } catch (e) {
+      if (e instanceof ExplorerRateLimited) throw e;
       lastError = e;
       await sleep(500 * 2 ** attempt);
     }

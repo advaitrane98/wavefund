@@ -2,7 +2,7 @@ import { type Address, type Hex, getAbiItem, toEventSelector } from "viem";
 import { proposerRegistryAbi, quantumRoundAbi } from "@/abis";
 import { agentByAddress, forecasterAgents, proposerAgents } from "@/config/agents";
 import { deployment } from "@/config/contracts";
-import { type DecodedLog, decodeLogs, fetchLogs, newestFirst } from "./explorer";
+import { type DecodedLog, type ExplorerLog, decodeLogs, fetchLogs, newestFirst } from "./explorer";
 import type { PublicClient } from "viem";
 
 // ------------------------------------------------------------------ event shapes
@@ -166,94 +166,100 @@ export function forecasterStatsOf(
 
 const selector = (name: string) => toEventSelector(getAbiItem({ abi: quantumRoundAbi, name } as never) as never);
 
-async function inBatches<T>(tasks: (() => Promise<T>)[], size: number): Promise<T[]> {
-  const out: T[] = [];
-  for (let i = 0; i < tasks.length; i += size) {
-    out.push(...(await Promise.all(tasks.slice(i, i + size).map((t) => t()))));
-  }
-  return out;
+export interface LogSource {
+  logs: ExplorerLog[];
+  /** "explorer" normally. "rpc" when the explorer API was rate limited or down. */
+  source: "explorer" | "rpc";
 }
 
 /**
- * Agent stats from the explorer API (events) and ProposerRegistry (counters).
- * Throws when the explorer API cannot be reached, so the caller can keep the last good data.
+ * Every QuantumRound event in one explorer request (the explorer's free tier allows few requests,
+ * so per-event and per-agent queries would exhaust it). Falls back to the chain RPC if the explorer fails.
  */
-export async function fetchAgentStats(client: PublicClient): Promise<AgentStats> {
-  const qr = deployment.addresses.quantumRound;
-  const registry = deployment.addresses.registry;
-  if (!qr) throw new Error("QuantumRound is not in the address book");
+export async function loadQuantumRoundLogs(client: PublicClient): Promise<LogSource> {
+  const address = deployment.addresses.quantumRound;
+  if (!address) throw new Error("QuantumRound is not in the address book");
   const fromBlock = deployment.deployBlock ?? 0n;
+  try {
+    return { logs: await fetchLogs({ address, fromBlock }), source: "explorer" };
+  } catch {
+    const raw = await client.getLogs({ address, fromBlock, toBlock: "latest" });
+    return {
+      source: "rpc",
+      logs: raw.map((l) => ({
+        address: l.address,
+        blockNumber: l.blockNumber ?? 0n,
+        logIndex: BigInt(l.logIndex ?? 0),
+        timeStamp: 0n,
+        topics: l.topics as Hex[],
+        data: l.data,
+        transactionHash: (l.transactionHash ?? "0x") as Hex,
+      })),
+    };
+  }
+}
 
-  const logs = (name: string, user?: Address, pos?: 2 | 3) =>
-    fetchLogs({
-      address: qr,
-      topic0: selector(name),
-      topics: user && pos ? { [pos]: user } : undefined,
-      fromBlock,
-    });
+const ofEvent = (logs: readonly ExplorerLog[], name: string) => {
+  const sel = selector(name).toLowerCase();
+  return logs.filter((l) => l.topics[0]?.toLowerCase() === sel);
+};
 
-  // Round-wide events first.
-  const [proposalLogs, collapsedLogs, settledLogs] = await inBatches(
-    [() => logs("ProposalCreated"), () => logs("Collapsed"), () => logs("RoundSettled")],
-    3,
-  );
+/** Pure: turn raw QuantumRound logs and registry rows into the agent stats. */
+export function buildAgentStats(
+  logs: readonly ExplorerLog[],
+  registryRows: ({ proposalsMade: number; roundsWon: number; name: string } | null)[],
+): Omit<AgentStats, "fetchedAt"> {
   const roundEvents: RoundEvents = {
-    proposals: decodeLogs(quantumRoundAbi, "ProposalCreated", proposalLogs),
-    collapsed: decodeLogs(quantumRoundAbi, "Collapsed", collapsedLogs),
-    settled: decodeLogs(quantumRoundAbi, "RoundSettled", settledLogs),
+    proposals: decodeLogs(quantumRoundAbi, "ProposalCreated", ofEvent(logs, "ProposalCreated")),
+    collapsed: decodeLogs(quantumRoundAbi, "Collapsed", ofEvent(logs, "Collapsed")),
+    settled: decodeLogs(quantumRoundAbi, "RoundSettled", ofEvent(logs, "RoundSettled")),
   };
   const settledRounds = new Set(roundEvents.settled.map((s) => s.args.roundId));
-
-  // Registry counters for every proposer in agents.json.
-  const registryRows: ({ proposalsMade: number; roundsWon: number; name: string } | null)[] =
-    registry && proposerAgents.length
-      ? (
-          (await client.multicall({
-            contracts: proposerAgents.map((a) => ({
-              address: registry,
-              abi: proposerRegistryAbi,
-              functionName: "agents",
-              args: [a.address],
-            })) as never,
-            allowFailure: true,
-          })) as { status: string; result?: readonly unknown[] }[]
-        ).map((r) =>
-          r.status === "success" && r.result
-            ? { name: String(r.result[0]), proposalsMade: Number(r.result[3]), roundsWon: Number(r.result[4]) }
-            : null,
-        )
-      : proposerAgents.map(() => null);
+  const forecasterEvents: ForecasterEvents = {
+    deposited: decodeLogs(quantumRoundAbi, "Deposited", ofEvent(logs, "Deposited")),
+    redeemed: decodeLogs(quantumRoundAbi, "Redeemed", ofEvent(logs, "Redeemed")),
+    bought: decodeLogs(quantumRoundAbi, "Bought", ofEvent(logs, "Bought")),
+    sold: decodeLogs(quantumRoundAbi, "Sold", ofEvent(logs, "Sold")),
+  };
 
   const proposers: Record<string, ProposerStats> = {};
   proposerAgents.forEach((a, i) => {
     proposers[a.address.toLowerCase()] = proposerStatsOf(a.address, roundEvents, registryRows[i] ?? null);
   });
-
-  // Forecaster events, a few requests at a time to stay under the explorer's rate limit.
   const forecasters: Record<string, ForecasterStats> = {};
   for (const a of forecasterAgents) {
-    const [dep, red, buy, sell] = await inBatches(
-      [
-        () => logs("Deposited", a.address, 2),
-        () => logs("Redeemed", a.address, 2),
-        () => logs("Bought", a.address, 3),
-        () => logs("Sold", a.address, 3),
-      ],
-      2,
-    );
-    forecasters[a.address.toLowerCase()] = forecasterStatsOf(
-      a.address,
-      {
-        deposited: decodeLogs(quantumRoundAbi, "Deposited", dep),
-        redeemed: decodeLogs(quantumRoundAbi, "Redeemed", red),
-        bought: decodeLogs(quantumRoundAbi, "Bought", buy),
-        sold: decodeLogs(quantumRoundAbi, "Sold", sell),
-      },
-      settledRounds,
-    );
+    forecasters[a.address.toLowerCase()] = forecasterStatsOf(a.address, forecasterEvents, settledRounds);
   }
+  return { proposers, forecasters };
+}
 
-  return { proposers, forecasters, fetchedAt: Date.now() };
+/**
+ * Agent stats from QuantumRound events (explorer API) and ProposerRegistry counters (RPC).
+ * Throws when neither the explorer nor the RPC can serve the logs, so the caller keeps the last good data.
+ */
+export async function fetchAgentStats(client: PublicClient): Promise<AgentStats & { source: LogSource["source"] }> {
+  const registry = deployment.addresses.registry;
+  const [{ logs, source }, rows] = await Promise.all([
+    loadQuantumRoundLogs(client),
+    registry && proposerAgents.length
+      ? (client.multicall({
+          contracts: proposerAgents.map((a) => ({
+            address: registry,
+            abi: proposerRegistryAbi,
+            functionName: "agents",
+            args: [a.address],
+          })) as never,
+          allowFailure: true,
+        }) as Promise<{ status: string; result?: readonly unknown[] }[]>)
+      : Promise.resolve([] as { status: string; result?: readonly unknown[] }[]),
+  ]);
+  const registryRows = proposerAgents.map((_, i) => {
+    const r = rows[i];
+    return r?.status === "success" && r.result
+      ? { name: String(r.result[0]), proposalsMade: Number(r.result[3]), roundsWon: Number(r.result[4]) }
+      : null;
+  });
+  return { ...buildAgentStats(logs, registryRows), fetchedAt: Date.now(), source };
 }
 
 /** Registered agents.json name for an address, if any. Used by cards that only know the proposer address. */
