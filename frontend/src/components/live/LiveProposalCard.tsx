@@ -1,10 +1,12 @@
 "use client";
 
+import { agentByAddress } from "@/config/agents";
 import { explorerAddressUrl, shortAddress } from "@/lib/chain";
 import { formatBps, formatProbability, formatSignedPercent, credits, long, short } from "@/lib/units";
 import type { RoundPhase } from "@/lib/live/logic";
 import type { ProposalView, RoundView } from "@/lib/live/types";
 import { Pill } from "../ui";
+import { ClampedText } from "./ClampedText";
 
 function Metric({
   label,
@@ -37,9 +39,10 @@ export function LiveProposalCard({
   const state = decided ? (isWinner ? "winner" : "erased") : undefined;
   const tradable = phase === "trading";
   const teth = Number(proposal.tEthBps) / 100;
+  const agent = agentByAddress(proposal.proposer);
   const name = proposal.isStatusQuo
     ? "Keep current allocation (Protocol)"
-    : (proposal.proposerName ?? (proposal.proposer ? shortAddress(proposal.proposer) : "Proposal"));
+    : (agent?.name ?? proposal.proposerName ?? (proposal.proposer ? shortAddress(proposal.proposer) : "Proposal"));
 
   return (
     <article
@@ -52,7 +55,7 @@ export function LiveProposalCard({
           <h3 className="font-display text-xl leading-tight">{name}</h3>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Pill tone={proposal.isStatusQuo ? "muted" : "violet"}>
-              {proposal.isStatusQuo ? "Protocol" : "Agent"}
+              {proposal.isStatusQuo ? "Protocol" : "Proposer agent"}
             </Pill>
             {proposal.proposer ? (
               <a
@@ -81,9 +84,7 @@ export function LiveProposalCard({
         </p>
       </div>
 
-      {proposal.rationale ? (
-        <p className="mt-4 line-clamp-3 text-sm text-muted">{proposal.rationale}</p>
-      ) : null}
+      {proposal.rationale ? <ClampedText text={proposal.rationale} className="mt-4" /> : null}
 
       <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-4">
         <Metric
