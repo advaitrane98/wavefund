@@ -1,6 +1,7 @@
 import { DemoPage } from "@/components/DemoPage";
+import { LivePortfolio } from "@/components/live/LivePortfolio";
+import { ModeSwitch } from "@/components/ModeSwitch";
 import { PortfolioView } from "@/components/portfolio/PortfolioView";
-import { WorkspaceGate } from "@/components/WorkspaceGate";
 
 export default function PortfolioPage() {
   return (
@@ -9,9 +10,7 @@ export default function PortfolioPage() {
       title="Portfolio"
       description="Your balances, deposits, credits and positions, with what you can redeem per round."
     >
-      <WorkspaceGate>
-        <PortfolioView />
-      </WorkspaceGate>
+      <ModeSwitch mock={<PortfolioView />} live={<LivePortfolio />} />
     </DemoPage>
   );
 }
