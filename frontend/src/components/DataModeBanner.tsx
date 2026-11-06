@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { deployedContracts } from "@/lib/contracts";
+import { deployedContracts } from "@/config/contracts";
 import { useLiveData } from "@/lib/live/LiveDataProvider";
 import { useSim } from "@/sim/SimProvider";
 import { usePreferences } from "./PreferencesProvider";

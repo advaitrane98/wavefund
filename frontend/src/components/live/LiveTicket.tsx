@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { marketAbi, quantumRoundAbi } from "@/generated/abis";
-import { deployment } from "@/lib/contracts";
+import { waveV4ProposalMarketAbi, quantumRoundAbi } from "@/abis";
+import { deployment } from "@/config/contracts";
 import { getPublicClient } from "@/lib/live/client";
 import { explainError } from "@/lib/live/errors";
 import { useLiveData } from "@/lib/live/LiveDataProvider";
@@ -105,7 +105,7 @@ export function LiveTicket({
         const fn = `quote${action === "buy" ? "Buy" : "Sell"}${side === "LONG" ? "Long" : "Short"}`;
         const raw = await getPublicClient().readContract({
           address: market,
-          abi: marketAbi,
+          abi: waveV4ProposalMarketAbi,
           functionName: fn as never,
           args: [BigInt(round.id), BigInt(proposal.id), amountRaw] as never,
         });

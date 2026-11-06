@@ -1,6 +1,6 @@
 "use client";
 
-import { deployedContracts } from "@/lib/contracts";
+import { deployedContracts } from "@/config/contracts";
 import { useSim } from "@/sim/SimProvider";
 import { usePreferences } from "./PreferencesProvider";
 import { Card, Eyebrow } from "./ui";

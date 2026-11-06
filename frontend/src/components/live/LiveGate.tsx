@@ -1,6 +1,6 @@
 "use client";
 
-import { hasLiveDeployment } from "@/lib/contracts";
+import { hasLiveDeployment } from "@/config/contracts";
 import { useLiveData } from "@/lib/live/LiveDataProvider";
 import { PreferencesButton } from "./PreferencesButton";
 import { useWallet } from "../WalletProvider";

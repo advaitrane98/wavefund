@@ -1,4 +1,5 @@
 import { defineChain, numberToHex } from "viem";
+import { external } from "@/config/contracts";
 
 /**
  * Arc testnet. USDC is the native gas token (18 decimals in the native view).
@@ -25,7 +26,7 @@ export const arcTestnet = defineChain({
 export const ARC_CHAIN_ID_HEX = numberToHex(arcTestnet.id);
 
 /** ERC-20 interface of the native USDC balance on Arc (6 decimals). */
-export const USDC_ADDRESS = "0x3600000000000000000000000000000000000000" as const;
+export const USDC_ADDRESS = (external.USDC ?? "0x3600000000000000000000000000000000000000") as `0x${string}`;
 export const USDC_DECIMALS = 6;
 
 /** Public RPC; NEXT_PUBLIC_ARC_RPC_URL overrides the default. It is public, so never put a secret in it. */

@@ -11,7 +11,7 @@ import {
 } from "react";
 import { usePreferences } from "@/components/PreferencesProvider";
 import { useWallet } from "@/components/WalletProvider";
-import { hasLiveDeployment } from "@/lib/contracts";
+import { hasLiveDeployment } from "@/config/contracts";
 import { getPublicClient } from "./client";
 import { fetchHistory, fetchSnapshot, fetchUserRounds, type UserRoundRow } from "./snapshot";
 import type { HistoryRow, Snapshot } from "./types";

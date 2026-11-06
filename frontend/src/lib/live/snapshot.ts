@@ -1,14 +1,14 @@
 import { erc20Abi, type Abi, type Address, type Hash, type PublicClient } from "viem";
 import { USDC_ADDRESS } from "@/lib/chain";
 import {
-  marketAbi,
-  oracleAbi,
+  waveV4ProposalMarketAbi,
+  mockPriceOracleAbi,
   proposalTokensAbi,
   quantumRoundAbi,
-  registryAbi,
-  vaultAbi,
-} from "@/generated/abis";
-import { deployment } from "@/lib/contracts";
+  proposerRegistryAbi,
+  wavefundVaultAbi,
+} from "@/abis";
+import { deployment } from "@/config/contracts";
 import { computePhase, impliedReturn } from "./logic";
 import type { HistoryRow, ProposalView, RoundView, Snapshot, UserView, VaultView } from "./types";
 
@@ -62,18 +62,18 @@ export async function fetchSnapshot(client: PublicClient, account: Address | nul
   // Wave 1: block, round counter, vault and user globals.
   const wave1: Call[] = [
     { address: qr, abi: quantumRoundAbi as Abi, functionName: "currentRoundId" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "navUsdc" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "totalVaultUsdc" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "totalVaultTEth" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "queuedDepositsUsdc" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "queuedWithdrawShares" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "sharePriceUsdc" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "totalSupply" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "oraclePriceTEthInUsdc" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "spotPriceTEthInUsdc" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "currentTEthBps" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "unreportedRound" },
-    { address: vault, abi: vaultAbi as Abi, functionName: "oracle" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "navUsdc" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "totalVaultUsdc" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "totalVaultTEth" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "queuedDepositsUsdc" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "queuedWithdrawShares" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "sharePriceUsdc" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "totalSupply" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "oraclePriceTEthInUsdc" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "spotPriceTEthInUsdc" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "currentTEthBps" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "unreportedRound" },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "oracle" },
   ];
   const userCalls: Call[] = account
     ? [
@@ -81,11 +81,11 @@ export async function fetchSnapshot(client: PublicClient, account: Address | nul
         { address: USDC_ADDRESS, abi: erc20Abi, functionName: "allowance", args: [account, qr] },
         { address: USDC_ADDRESS, abi: erc20Abi, functionName: "allowance", args: [account, vault] },
         { address: qr, abi: quantumRoundAbi as Abi, functionName: "pendingPayout", args: [account] },
-        { address: vault, abi: vaultAbi as Abi, functionName: "balanceOf", args: [account] },
-        { address: vault, abi: vaultAbi as Abi, functionName: "depositRequest", args: [account] },
-        { address: vault, abi: vaultAbi as Abi, functionName: "withdrawRequest", args: [account] },
-        { address: vault, abi: vaultAbi as Abi, functionName: "claimable", args: [account] },
-        { address: vault, abi: vaultAbi as Abi, functionName: "claimableUsdc", args: [account] },
+        { address: vault, abi: wavefundVaultAbi as Abi, functionName: "balanceOf", args: [account] },
+        { address: vault, abi: wavefundVaultAbi as Abi, functionName: "depositRequest", args: [account] },
+        { address: vault, abi: wavefundVaultAbi as Abi, functionName: "withdrawRequest", args: [account] },
+        { address: vault, abi: wavefundVaultAbi as Abi, functionName: "claimable", args: [account] },
+        { address: vault, abi: wavefundVaultAbi as Abi, functionName: "claimableUsdc", args: [account] },
       ]
     : [];
 
@@ -102,7 +102,7 @@ export async function fetchSnapshot(client: PublicClient, account: Address | nul
   const u = w1.slice(13);
 
   // Wave 2: round data and the oracle timestamp.
-  const wave2: Call[] = [{ address: oracleAddress, abi: oracleAbi as Abi, functionName: "latestPrice" }];
+  const wave2: Call[] = [{ address: oracleAddress, abi: mockPriceOracleAbi as Abi, functionName: "latestPrice" }];
   if (currentRoundId > 0) {
     wave2.push({ address: qr, abi: quantumRoundAbi as Abi, functionName: "rounds", args: [BigInt(currentRoundId)] });
     if (account) {
@@ -161,9 +161,9 @@ export async function fetchSnapshot(client: PublicClient, account: Address | nul
       const pid = BigInt(p);
       wave3.push({ address: qr, abi: quantumRoundAbi as Abi, functionName: "proposals", args: [roundId, pid] });
       slots.push({ kind: "proposal", p });
-      wave3.push({ address: market, abi: marketAbi as Abi, functionName: "probabilities", args: [roundId, pid] });
+      wave3.push({ address: market, abi: waveV4ProposalMarketAbi as Abi, functionName: "probabilities", args: [roundId, pid] });
       slots.push({ kind: "probs", p });
-      wave3.push({ address: market, abi: marketAbi as Abi, functionName: "probabilityTwap", args: [roundId, pid] });
+      wave3.push({ address: market, abi: waveV4ProposalMarketAbi as Abi, functionName: "probabilityTwap", args: [roundId, pid] });
       slots.push({ kind: "twap", p });
       if (!tokenCache.has(`${currentRoundId}:${p}`)) {
         for (const kind of ["creditToken", "longToken", "shortToken"] as const) {
@@ -203,7 +203,7 @@ export async function fetchSnapshot(client: PublicClient, account: Address | nul
     }
     for (const proposer of proposers) {
       if (!nameCache.has(proposer)) {
-        wave4.push({ address: registry, abi: registryAbi as Abi, functionName: "agents", args: [proposer] });
+        wave4.push({ address: registry, abi: proposerRegistryAbi as Abi, functionName: "agents", args: [proposer] });
         slots4.push({ kind: "name", key: proposer });
       }
     }
@@ -312,7 +312,7 @@ export async function fetchHistory(client: PublicClient, currentRoundId: number)
 
   const waveA: Call[] = ids.flatMap((r) => [
     { address: qr, abi: quantumRoundAbi as Abi, functionName: "rounds", args: [BigInt(r)] },
-    { address: vault, abi: vaultAbi as Abi, functionName: "roundState", args: [BigInt(r)] },
+    { address: vault, abi: wavefundVaultAbi as Abi, functionName: "roundState", args: [BigInt(r)] },
     { address: qr, abi: quantumRoundAbi as Abi, functionName: "proposals", args: [BigInt(r), 0n] },
   ]);
   const a = await batch(client, waveA);
@@ -348,7 +348,7 @@ export async function fetchHistory(client: PublicClient, currentRoundId: number)
         const from = deployment.deployBlock ?? (head > LOG_LOOKBACK ? head - LOG_LOOKBACK : 0n);
         const logs = await client.getContractEvents({
           address: vault,
-          abi: vaultAbi as Abi,
+          abi: wavefundVaultAbi as Abi,
           eventName: "TradeExecuted",
           args: { roundId: BigInt(roundId) },
           fromBlock: from,

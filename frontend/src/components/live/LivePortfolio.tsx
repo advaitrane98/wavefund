@@ -1,7 +1,7 @@
 "use client";
 
-import { quantumRoundAbi } from "@/generated/abis";
-import { deployment } from "@/lib/contracts";
+import { quantumRoundAbi } from "@/abis";
+import { deployment } from "@/config/contracts";
 import { useLiveData } from "@/lib/live/LiveDataProvider";
 import type { ProposalView, RoundView } from "@/lib/live/types";
 import { credits, long, short, usdc, wave } from "@/lib/units";

@@ -1,7 +1,7 @@
 "use client";
 
 import { explorerAddressUrl } from "@/lib/chain";
-import { deployment } from "@/lib/contracts";
+import { deployment } from "@/config/contracts";
 import { useChainNow, useLiveData } from "@/lib/live/LiveDataProvider";
 import { usdc, wave, teth, formatBps } from "@/lib/units";
 import { Card, Eyebrow } from "../ui";
@@ -30,6 +30,12 @@ export function LiveVault() {
   return (
     <div className="space-y-6">
       <WalletPrompt text="Connect your wallet on Arc testnet to queue vault deposits and withdrawals." />
+
+      {v.totalSupply === 0n ? (
+        <p className="rounded-xl bg-amber-soft p-4 text-sm text-amber" role="status">
+          The vault has not been funded yet: no WAVE shares exist, so NAV is zero and deposits are not open.
+        </p>
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>

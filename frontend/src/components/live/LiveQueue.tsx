@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { erc20Abi } from "viem";
-import { vaultAbi } from "@/generated/abis";
+import { wavefundVaultAbi } from "@/abis";
 import { USDC_ADDRESS } from "@/lib/chain";
-import { deployment } from "@/lib/contracts";
+import { deployment } from "@/config/contracts";
 import { useLiveData } from "@/lib/live/LiveDataProvider";
 import { usdc, wave } from "@/lib/units";
 import { Eyebrow } from "../ui";
@@ -65,8 +65,11 @@ export function LiveQueue() {
   const withdrawValue = withdrawRaw !== null ? (withdrawRaw * v.sharePriceUsdc) / 10n ** 18n : 0n;
   const exceedsFree = withdrawValue > v.totalVaultUsdc;
 
-  const depositProblem =
-    depositRaw !== null && depositRaw < MIN_DEPOSIT
+  // The contract rejects deposits until the operator has funded the vault and shares exist.
+  const bootstrapped = v.totalSupply > 0n;
+  const depositProblem = !bootstrapped
+    ? "The vault has not been funded yet, so deposits are not open."
+    : depositRaw !== null && depositRaw < MIN_DEPOSIT
       ? "The minimum deposit is 1 USDC."
       : depositRaw !== null && depositRaw > usdcBalance
         ? "That is more USDC than your wallet holds."
@@ -89,7 +92,7 @@ export function LiveQueue() {
     steps.push({
       label: "Queueing deposit",
       address: vaultAddr,
-      abi: vaultAbi as never,
+      abi: wavefundVaultAbi as never,
       functionName: "requestDeposit",
       args: [depositRaw],
     });
@@ -97,7 +100,7 @@ export function LiveQueue() {
   }
 
   const simple = (label: string, done: string, functionName: string, args?: readonly unknown[]) =>
-    vaultAddr && void tx.run(done, [{ label, address: vaultAddr, abi: vaultAbi as never, functionName, args }]);
+    vaultAddr && void tx.run(done, [{ label, address: vaultAddr, abi: wavefundVaultAbi as never, functionName, args }]);
 
   const hasClaim = v.user.claimableShares > 0n || v.user.claimableUsdcFromEpochs > 0n;
 
@@ -162,7 +165,7 @@ export function LiveQueue() {
             disabled={!ready || tx.busy || withdrawRaw === null || withdrawRaw === 0n || !!withdrawProblem || exceedsFree}
             onClick={async () => {
               if (withdrawRaw === null) return;
-              if (await tx.run("Withdrawal queued for the next decision.", [{ label: "Queueing withdrawal", address: vaultAddr, abi: vaultAbi as never, functionName: "requestWithdraw", args: [withdrawRaw] }])) {
+              if (await tx.run("Withdrawal queued for the next decision.", [{ label: "Queueing withdrawal", address: vaultAddr, abi: wavefundVaultAbi as never, functionName: "requestWithdraw", args: [withdrawRaw] }])) {
                 setWithdrawText("");
               }
             }}

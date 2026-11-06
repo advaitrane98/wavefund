@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { deployedContracts } from "@/lib/contracts";
+import { deployedContracts } from "@/config/contracts";
 import { explorerAddressUrl } from "@/lib/chain";
 import { Eyebrow } from "./ui";
 

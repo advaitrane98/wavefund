@@ -1,9 +1,9 @@
 "use client";
 
 import { formatUnits } from "viem";
-import { quantumRoundAbi } from "@/generated/abis";
+import { quantumRoundAbi } from "@/abis";
 import { explorerTxUrl } from "@/lib/chain";
-import { deployment } from "@/lib/contracts";
+import { deployment } from "@/config/contracts";
 import {
   computePhase,
   formatCountdown,
