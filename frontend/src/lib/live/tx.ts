@@ -7,6 +7,16 @@ import {
   type Hash,
   type PublicClient,
 } from "viem";
+import {
+  mockPriceOracleAbi,
+  proposalTokenAbi,
+  proposalTokensAbi,
+  proposerRegistryAbi,
+  quantumRoundAbi,
+  resolverAbi,
+  waveV4ProposalMarketAbi,
+  wavefundVaultAbi,
+} from "@/abis";
 import { arcTestnet } from "@/lib/chain";
 import { getPublicClient } from "./client";
 
@@ -27,6 +37,21 @@ export async function feeOverrides(
     maxFeePerGas: twice > MIN_MAX_FEE ? twice : MIN_MAX_FEE,
   };
 }
+
+/**
+ * Custom errors can come from a contract the call reaches (the adapter, the registry, a token), not only
+ * the one we call. Giving viem every error definition lets it name them instead of printing a selector.
+ */
+const NESTED_ERRORS = [
+  quantumRoundAbi,
+  waveV4ProposalMarketAbi,
+  wavefundVaultAbi,
+  proposerRegistryAbi,
+  proposalTokensAbi,
+  proposalTokenAbi,
+  resolverAbi,
+  mockPriceOracleAbi,
+].flatMap((abi) => (abi as readonly { type: string }[]).filter((e) => e.type === "error")) as unknown as Abi;
 
 export interface TxRequest {
   address: Address;
@@ -54,7 +79,7 @@ export async function sendContractTx(
   const { request } = await publicClient.simulateContract({
     account,
     address: req.address,
-    abi: req.abi,
+    abi: [...req.abi, ...NESTED_ERRORS] as Abi,
     functionName: req.functionName,
     args: req.args,
     ...fees,
