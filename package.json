@@ -1,0 +1,35 @@
+{
+  "name": "wavefund-ops",
+  "private": true,
+  "type": "module",
+  "description": "Operator scripts for Wavefund on Arc Testnet (Node ESM + viem). The Next.js app lives in frontend/.",
+  "engines": { "node": ">=22.9" },
+  "scripts": {
+    "abi:export": "node scripts/export-abis.mjs",
+    "forge:deploy": "node --env-file-if-exists=.env scripts/forge-run.mjs Deploy",
+    "forge:hook": "node --env-file-if-exists=.env scripts/forge-run.mjs DeployWaveHook",
+    "forge:helper": "node --env-file-if-exists=.env scripts/forge-run.mjs DeployPoolHelper",
+    "forge:wire": "node --env-file-if-exists=.env scripts/forge-run.mjs Wire",
+    "dryrun:fork": "bash scripts/dev/fork-dryrun.sh",
+    "check:contracts": "node --env-file-if-exists=.env scripts/check-contracts.mjs",
+    "fund:protocol": "node --env-file-if-exists=.env scripts/fund-protocol.mjs",
+    "fund:vault": "node --env-file-if-exists=.env scripts/fund-vault.mjs",
+    "oracle:update": "node --env-file-if-exists=.env scripts/oracle-update.mjs",
+    "oracle:start": "node --env-file-if-exists=.env scripts/oracle-start.mjs",
+    "oracle:stop": "node --env-file-if-exists=.env scripts/oracle-stop.mjs",
+    "pool:recenter": "node --env-file-if-exists=.env scripts/pool-recenter.mjs",
+    "demo:preflight": "node --env-file-if-exists=.env scripts/demo-preflight.mjs",
+    "demo:open-round": "node --env-file-if-exists=.env scripts/demo-open-round.mjs",
+    "demo:close-round": "node --env-file-if-exists=.env scripts/demo-close-round.mjs",
+    "demo:manipulate": "node --env-file-if-exists=.env scripts/demo-manipulate.mjs",
+    "keeper:run": "node --env-file-if-exists=.env scripts/keeper-run.mjs",
+    "round-report": "node --env-file-if-exists=.env scripts/round-report.mjs",
+    "wallets:create": "node --env-file-if-exists=.env scripts/wallets-create.mjs",
+    "smoke:round": "node --env-file-if-exists=.env scripts/smoke-round.mjs",
+    "verify:contracts": "node --env-file-if-exists=.env scripts/verify-contracts.mjs",
+    "write:sources": "node --env-file-if-exists=.env scripts/write-sources.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  }
+}

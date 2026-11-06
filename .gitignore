@@ -16,3 +16,10 @@ node_modules
 .circle/
 recovery_file*
 keystore/
+
+# Operator runtime state (locks, pids, logs)
+.run/
+node_modules/
+
+# Fork rehearsal artefacts (never the real address book)
+contracts/deployments/fork-*.json
