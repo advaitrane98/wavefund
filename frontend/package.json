@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:abis": "node scripts/gen-abis.mjs",
+    "test:unit": "bun test src",
+    "e2e:live": "node e2e/live.mjs"
   },
   "dependencies": {
     "next": "^15.3.0",
