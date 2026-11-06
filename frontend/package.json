@@ -8,6 +8,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "gen:abis": "node scripts/gen-abis.mjs",
+    "check:live": "bun scripts/check-live-reads.ts",
     "test:unit": "bun test src",
     "e2e:live": "node e2e/live.mjs"
   },
