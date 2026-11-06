@@ -1,0 +1,45 @@
+{
+  "chainId": 5042002,
+  "agents": [
+    {
+      "id": "momentum",
+      "name": "Momentum",
+      "type": "proposer",
+      "description": "Proposes treasury allocations that follow the recent tETH price trend.",
+      "address": "0x927751387951B69390151f34f3dD756A624Abc0D",
+      "wallet": "circle-developer-controlled"
+    },
+    {
+      "id": "mean-reversion",
+      "name": "Mean Reversion",
+      "type": "proposer",
+      "description": "Proposes allocations that lean against stretched tETH moves.",
+      "address": "0x2901AB7721217a1733B744009847DFE3d9f70E25",
+      "wallet": "circle-developer-controlled"
+    },
+    {
+      "id": "news",
+      "name": "News",
+      "type": "proposer",
+      "description": "Proposes allocations based on a reading of current market news.",
+      "address": "0x324EC3C47f7c28C254977a14CA0ECec05524c455",
+      "wallet": "circle-developer-controlled"
+    },
+    {
+      "id": "quant",
+      "name": "Quant",
+      "type": "forecaster",
+      "description": "Forecaster that trades LONG and SHORT using quantitative signals.",
+      "address": "0x66617018c7d91e1345eA9F51b44a062aad2D439e",
+      "wallet": "circle-developer-controlled"
+    },
+    {
+      "id": "guardian",
+      "name": "Guardian",
+      "type": "forecaster",
+      "description": "Forecaster that trades to guard the treasury against weak proposals.",
+      "address": "0x4A1bA43Da2b795D68f63f34fba185D92A08f1d5f",
+      "wallet": "circle-developer-controlled"
+    }
+  ]
+}

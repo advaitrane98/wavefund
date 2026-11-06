@@ -153,3 +153,14 @@ if (addressBook) {
 } else {
   console.log("No addresses in the input: kept the existing src/config/deployment.json");
 }
+
+// ---------------------------------------------------------------- agents
+
+// agents/agents.json holds public data only (address, name, type, description). Copied so the
+// Vercel build, which only sees frontend/, has it.
+const agentsSource = path.resolve(frontendDir, "..", "agents", "agents.json");
+if (fs.existsSync(agentsSource)) {
+  const agents = readJson(agentsSource);
+  fs.writeFileSync(path.join(frontendDir, "src", "config", "agents.json"), `${JSON.stringify(agents, null, 2)}\n`);
+  console.log(`Wrote src/config/agents.json (${agents.agents?.length ?? 0} agents)`);
+}
