@@ -1,6 +1,7 @@
 import { DemoPage } from "@/components/DemoPage";
+import { LiveVault } from "@/components/live/LiveVault";
+import { ModeSwitch } from "@/components/ModeSwitch";
 import { VaultView } from "@/components/vault/VaultView";
-import { WorkspaceGate } from "@/components/WorkspaceGate";
 
 export default function VaultPage() {
   return (
@@ -9,9 +10,7 @@ export default function VaultPage() {
       title="Vault"
       description="The treasury vault: what it holds, how it is priced, and every decision the market has made."
     >
-      <WorkspaceGate>
-        <VaultView />
-      </WorkspaceGate>
+      <ModeSwitch mock={<VaultView />} live={<LiveVault />} />
     </DemoPage>
   );
 }
