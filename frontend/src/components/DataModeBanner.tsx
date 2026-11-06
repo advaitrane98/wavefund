@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { deployedContracts } from "@/lib/contracts";
+import { useLiveData } from "@/lib/live/LiveDataProvider";
 import { useSim } from "@/sim/SimProvider";
 import { usePreferences } from "./PreferencesProvider";
 import { Pill } from "./ui";
@@ -53,14 +54,36 @@ export function DataModeBanner() {
     );
   }
 
+  return <LiveBanner />;
+}
+
+function LiveBanner() {
+  const { enabled, status, snapshot, refresh } = useLiveData();
   return (
-    <div className="flex flex-wrap items-center gap-3 text-sm text-muted">
+    <div className="flex flex-wrap items-center gap-3 text-sm text-muted" data-live-status={status}>
       <Pill tone="green">On-chain data</Pill>
-      <span>
-        {deployedContracts.length > 0
-          ? `Reading ${deployedContracts.length} contract${deployedContracts.length === 1 ? "" : "s"} on Arc testnet.`
-          : "No contracts are listed in current.json yet, so there is nothing to read."}
-      </span>
+      {!enabled ? (
+        <span>
+          {deployedContracts.length === 0
+            ? "No deployment found yet. Add contracts/deployments/current.json and run the sync."
+            : "The deployment file is missing a contract live mode needs."}
+        </span>
+      ) : status === "stale" ? (
+        <span className="flex flex-wrap items-center gap-3 text-amber" role="status">
+          Data may be stale, retrying.
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="inline-flex min-h-11 items-center text-xs text-muted underline hover:text-text"
+          >
+            Retry now
+          </button>
+        </span>
+      ) : status === "loading" || !snapshot ? (
+        <span>Reading Arc testnet…</span>
+      ) : (
+        <span>Live from Arc testnet, block {snapshot.blockNumber.toString()}.</span>
+      )}
     </div>
   );
 }
