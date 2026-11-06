@@ -28,7 +28,8 @@ npm install
 npm run dev     # http://localhost:3000
 npm run build   # production build
 npm run test:unit   # unit tests (needs bun)
-npm run gen:abis    # rebuild contracts and refresh src/generated (needs Foundry)
+npm run gen:abis    # rebuild contracts and refresh src/abis and src/config (needs Foundry)
+npm run check:live  # read the live deployment and print a summary (needs bun)
 E2E_BASE_URL=https://your-app.vercel.app npm run e2e:live   # smoke test, live and mock mode
 ```
 
@@ -42,4 +43,9 @@ The smoke test needs a browser: run `npx playwright install chromium` once. It w
 
 ### Contract addresses
 
-Deployed contracts come from `contracts/deployments/current.json`. Run `npm run gen:abis` to rebuild the contracts and copy the ABIs and that file into `src/generated/` (committed, so Vercel needs no Foundry). The footer lists the addresses with Arc Explorer links.
+Addresses and ABIs are kept apart:
+
+- `src/config/deployment.json`: addresses only (the deployed Wavefund contracts, plus USDC and the Uniswap v4 PoolManager under `external`), the chain id and the deploy block. `src/config/contracts.ts` reads it and is the only place the app gets an address from.
+- `src/abis/<Contract>.ts`: one typed ABI per contract, with an `index.ts` that re-exports them.
+
+Both are generated and committed, so Vercel needs no Foundry. Run `npm run gen:abis` to rebuild the contracts and refresh them from `contracts/out` and `contracts/deployments/current.json`. To split a combined file instead (`{ chainId, addresses, abis }`), run `npm run gen:abis -- --from-json path/to/abis.json`. `npm run check:live` reads the live deployment with the app's own code and prints a summary (read-only). The footer lists the addresses with Arc Explorer links.
