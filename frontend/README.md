@@ -29,4 +29,4 @@ npm run build   # production build
 
 ### Contract addresses
 
-Deployed contracts are listed in `src/data/current.json` and shown in the footer with Arc Explorer links.
+Deployed contracts come from `contracts/deployments/current.json`. Run `npm run gen:abis` to rebuild the contracts and copy the ABIs and that file into `src/generated/` (committed, so Vercel needs no Foundry). The footer lists the addresses with Arc Explorer links.

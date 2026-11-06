@@ -30,7 +30,7 @@ export function Footer() {
         ) : (
           <p className="mt-5 max-w-xl text-sm text-muted">
             No deployed contracts are listed yet. Addresses appear here once they are added
-            to <span className="num">src/data/current.json</span>.
+            to <span className="num">contracts/deployments/current.json</span> and synced.
           </p>
         )}
 
