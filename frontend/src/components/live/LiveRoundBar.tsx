@@ -4,7 +4,13 @@ import { formatUnits } from "viem";
 import { quantumRoundAbi } from "@/generated/abis";
 import { explorerTxUrl } from "@/lib/chain";
 import { deployment } from "@/lib/contracts";
-import { formatCountdown, inFinalWindow, ratioToReturn, type RoundPhase } from "@/lib/live/logic";
+import {
+  computePhase,
+  formatCountdown,
+  inFinalWindow,
+  ratioToReturn,
+  type RoundPhase,
+} from "@/lib/live/logic";
 import { useChainNow, useLiveData } from "@/lib/live/LiveDataProvider";
 import type { RoundView } from "@/lib/live/types";
 import { formatSignedPercent, usdc } from "@/lib/units";
@@ -218,7 +224,5 @@ export function LiveRoundBar({ round }: Readonly<{ round: RoundView }>) {
 
 /** Recomputes the phase from the chain clock so countdowns flip states on time. */
 function livePhase(round: RoundView, now: number): RoundPhase {
-  if (round.status === 1) return now < round.tradingEnd ? "trading" : "closed";
-  if (round.status === 2) return now < round.evaluationEnd ? "evaluating" : "awaiting-settlement";
-  return round.phase;
+  return computePhase(round.status, now, round.tradingEnd, round.evaluationEnd);
 }
