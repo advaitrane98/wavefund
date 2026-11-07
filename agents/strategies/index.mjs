@@ -1,4 +1,5 @@
-// Baseline forecaster rules. They are deliberately simple and fully explained in `reasoning`; swap them for richer
+// LEGACY baseline forecaster rules, no longer used by the runtime since A3 (Quant and Guardian now use agents/lib/forecasters.mjs).
+// Kept only for its unit tests and as a reference. They are deliberately simple and fully explained in `reasoning`; swap them for richer
 // models later without touching the runtime. Proposer strategies live in agents/proposer-strategies.mjs.
 //   forecasters.decide({ agent, features, round, proposals: [{ id, tEthBps, pLong }], statusQuoBps })
 //     -> { action, proposalId?, long?, credits?, reasoning }

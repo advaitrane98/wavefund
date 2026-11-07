@@ -86,12 +86,16 @@ export function createCircleSigner({
       } catch (err) {
         const status = err?.response?.status;
         if (status && status >= 400 && status < 500) throw new CircleError(err, `submit ${functionName} rejected`);
-        if (attempt === 3) throw new CircleError(err, `submit ${functionName} failed`);
+        if (attempt === 3) {
+          const uncertain = new CircleError(err, `submit ${functionName} failed`);
+          uncertain.maybeBroadcast = true; // A timed-out request may have been accepted by Circle.
+          throw uncertain;
+        }
         await sleep(1500 * attempt);
       }
     }
     const id = created?.data?.id;
-    if (!id) throw new Error(`Circle returned no transaction id for ${functionName}`);
+    if (!id) throw Object.assign(new Error(`Circle returned no transaction id for ${functionName}`), { maybeBroadcast: true });
     const startedAt = now();
     let lastState = 'INITIATED';
     while (now() - startedAt < timeoutMs) {

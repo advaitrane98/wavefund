@@ -35,7 +35,8 @@
     "agents:fund:proposers": "node --env-file-if-exists=.env agents/fund.mjs --group proposers",
     "agents:fund:forecasters": "node --env-file-if-exists=.env agents/fund.mjs --group forecasters",
     "agents:run": "node --env-file-if-exists=.env agents/run.mjs",
-    "agents:test": "node --test agents/test/*.test.mjs"
+    "agents:test": "node --test agents/test/*.test.mjs",
+    "agents:mutation": "node agents/tools/mutation-check.mjs"
   },
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "^10.8.1",
