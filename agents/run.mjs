@@ -1,15 +1,15 @@
 // npm run agents:run -- [--dry-run | --execute] [--once] [--preset full|judge] [--only momentum,quant]
 //                       [--simulate-round full|judge]   (dry-run only: pretend a round just opened)
+//                       [--evaluate-now]                (dry-run only: Quant evaluates immediately instead of waiting for a tick)
+// Proposers run in one serial loop. Quant and Guardian run as two independent loops (agents/lib/forecasters.mjs) in this same process.
 // Default is --dry-run: decisions and transaction plans are logged, nothing is sent. --execute sends real
 // transactions through each agent's own wallet, under the gas, trade and proposal caps.
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { abis, chainNow, cliArgs, loadBook, publicClient, read } from '../scripts/demo-round-common.mjs';
 import { PRESETS, resolveTiming } from '../scripts/lib/round-actions.mjs';
-import { proposeSteps, tradeSteps } from './lib/actions.mjs';
-import {
-  agentState, creditBalance, creditsClaimed, marketPLong, proposalInfo, roundDeposit, snapshot,
-} from './lib/chain.mjs';
+import { proposeSteps } from './lib/actions.mjs';
+import { agentState, proposalInfo, snapshot } from './lib/chain.mjs';
 import { gasCaps } from './lib/config.mjs';
 import { StepFailed, createExecutor } from './lib/executor.mjs';
 import { AGENTS_RUN_DIR, loadAgents } from './lib/files.mjs';
@@ -17,11 +17,9 @@ import { CapError, SpendLedger } from './lib/ledger.mjs';
 import { acquireLock } from './lib/lock.mjs';
 import { createLogger } from './lib/logger.mjs';
 import { createMarketData, features as computeFeatures } from './lib/market-data.mjs';
-import {
-  dueTick, forecasterTicks, phaseOf, proposerWindow, secondsUntilNext, tradeCutoff,
-} from './lib/scheduler.mjs';
+import { phaseOf, proposerWindow } from './lib/scheduler.mjs';
 import { createSigner, signerBackend } from './lib/signers/index.mjs';
-import { forecasters } from './strategies/index.mjs';
+import { buildForecasterRuntime } from './lib/forecaster-setup.mjs';
 import { decideProposal } from './proposer-strategies.mjs';
 import { fetchHeadlines } from './lib/news.mjs';
 
@@ -41,12 +39,14 @@ export async function runAgents(argv = process.argv.slice(2)) {
   const args = cliArgs({
     'dry-run': { type: 'boolean', default: false }, execute: { type: 'boolean', default: false }, once: { type: 'boolean', default: false },
     preset: { type: 'string', default: 'full' }, only: { type: 'string' }, 'simulate-round': { type: 'string' }, 'simulate-status-quo': { type: 'string' }, poll: { type: 'string', default: '5' },
+    'evaluate-now': { type: 'boolean', default: false },
   }, argv);
   if (args['dry-run'] && args.execute) throw new Error('Use either --dry-run (default) or --execute, not both.');
   const execute = args.execute;
   if (!PRESETS[args.preset]) throw new Error(`unknown --preset "${args.preset}" (use full or judge)`);
   if ((args['simulate-round'] || args['simulate-status-quo']) && execute) throw new Error('--simulate-round and --simulate-status-quo are dry-run only.');
   if (args['simulate-status-quo'] && !args['simulate-round']) throw new Error('--simulate-status-quo needs --simulate-round.');
+  if (args['evaluate-now'] && execute) throw new Error('--evaluate-now is dry-run only.');
   const pollMs = Math.max(1, Number(args.poll)) * 1000;
 
   const logger = createLogger({ dir: path.join(AGENTS_RUN_DIR, 'logs') });
@@ -66,11 +66,13 @@ export async function runAgents(argv = process.argv.slice(2)) {
 
   try {
     const ledger = new SpendLedger({ file: path.join(AGENTS_RUN_DIR, 'ledger.json'), caps: gasCaps(args.preset) });
-    const recovered = await ledger.recover(async (hash) => {
+    const recovered = execute ? await ledger.recover(async (hash) => {
       const r = await publicClient.getTransactionReceipt({ hash });
       return r.gasUsed * r.effectiveGasPrice;
-    });
+    }) : { released: 0, committed: 0, stillPending: 0 };
     if (recovered.released || recovered.committed || recovered.stillPending) logger.info('recovered pending reservations', recovered);
+    const unresolved = ledger.unresolvedTradeReservations();
+    if (unresolved.length) logger.warn(`${unresolved.length} trade reservation(s) from an earlier run have no verdict; their credits stay counted against the caps`, { reservations: unresolved.map((r) => ({ key: r.key, credits: r.credits, state: r.state })) });
 
     // Dry-run remembers what it "did" only in memory, so it can never stop a later --execute run from acting.
     const firedMemory = new Set();
@@ -97,6 +99,7 @@ export async function runAgents(argv = process.argv.slice(2)) {
       agents: agents.map((a) => `${a.def.key}:${a.signer.address}`),
     });
 
+    const proposers = agents.filter((a) => a.def.type === 'proposer');
     let lastIdleLog = 0;
     const cycle = new Map(); // round -> allocations chosen so far this cycle (kept in memory, also in dry-run)
     let newsCache = null;
@@ -127,68 +130,39 @@ export async function runAgents(argv = process.argv.slice(2)) {
       const base = { round: roundKey, simulated: Boolean(snap.simulated), phase: phaseOf(timing, now), timing, now, statusQuoBps, mode: execute ? 'execute' : 'dry-run' };
       let nextWait = pollMs;
 
-      for (const a of agents) {
+      for (const a of proposers) {
         if (stop.signal.aborted) break;
         const { def } = a;
         const state = await agentState(a.signer.address);
         const spend = ledger.usage(def.key, roundKey);
         const inputs = { ...base, features: f, candleSource: { cached: data.cached, candles: f.candles }, agentUsdc: state.usdc.toString(), gasUsedRoundWei: spend.round.toString(), gasUsedDayWei: spend.day.toString() };
 
-        if (def.type === 'proposer') {
-          const firedKey = `${roundKey}|${def.key}|propose`;
-          if (fired.has(firedKey)) continue;
-          const win = proposerWindow(timing, def);
-          if (now < win.opensAt) { nextWait = Math.min(nextWait, (win.opensAt - now) * 1000); logWait(def.key, { inputs, action: 'wait', reasoning: `proposal window opens in ${win.opensAt - now}s` }); continue; }
-          if (now > win.closesAt || !win.valid) { fired.mark(firedKey); logger.decision(def.key, { inputs, action: 'skip', reasoning: 'proposal window already closed' }); continue; }
-          const onChain = [];
-          for (let p = 1; p < Number(snap.proposalCount); p++) onChain.push((await proposalInfo(snap.id, p)).tEthBps);
-          const chosen = cycle.get(roundKey) ?? [];
-          const news = def.key === 'news' ? await headlinesNow() : { headlines: [] };
-          const d = await decideProposal({ def, candles: data.candles, statusQuoBps, others: [...onChain, ...chosen], headlines: news.headlines, env: process.env });
-          const reasoning = d.action === 'propose'
-            ? `${d.source}: raw ${d.rawBps} bps (z ${d.z?.toFixed(2)}), ${d.shifted ? `shifted to ${d.finalBps} bps (${d.shiftSide})` : 'no shift needed'}; ${d.why}`
-            : `skip: ${d.skipReason}`;
-          logger.decision(def.key, {
-            inputs: { ...inputs, existingProposalsBps: onChain, chosenThisCycleBps: chosen, headlines: news.headlines?.map((h) => h.title), newsError: news.error },
-            action: d.action, reasoning, source: d.source, rawBps: d.rawBps, finalBps: d.finalBps, shifted: d.shifted, shiftSide: d.shiftSide,
-            tEthBps: d.finalBps, rationale: d.rationale, signal: d.signal,
-          });
-          if (d.action !== 'propose') { fired.mark(firedKey); continue; }
-          try {
-            const steps = proposeSteps({ agentDef: def, state, roundId: snap.id, tEthBps: d.finalBps, rationale: d.rationale });
-            for (const s of steps) await a.executor.run(s, { roundId: roundKey });
-            cycle.set(roundKey, [...chosen, d.finalBps]);
-            fired.mark(firedKey);
-          } catch (err) {
-            handleFailure(a, firedKey, err);
-          }
-        } else {
-          const ticks = forecasterTicks(timing, def);
-          const cutoff = tradeCutoff(timing, def.key);
-          const fk = (t) => `${roundKey}|${def.key}|t${t.index}`;
-          const { tick, missed } = dueTick(ticks, (t) => fired.has(fk(t)), now, cutoff);
-          for (const m of missed) { fired.mark(fk(m)); logger.info(`${def.key}: missed tick ${m.index} (${m.phase})`); }
-          const upcoming = secondsUntilNext(ticks, (t) => fired.has(fk(t)), now);
-          if (upcoming != null) nextWait = Math.min(nextWait, upcoming * 1000);
-          if (!tick) { logWait(def.key, { inputs, action: 'wait', reasoning: now > cutoff ? `trading cutoff passed (${tradeCutoff(timing, def.key)}, ${now > timing.tradingEnd ? 'trading ended' : 'inside the guard window before tradingEnd'})` : `next tick in ${upcoming ?? 'n/a'}s`, ticks: ticks.length }); continue; }
-          const proposals = [];
-          for (let p = 1; p < Number(snap.proposalCount); p++) {
-            const info = await proposalInfo(snap.id, p);
-            proposals.push({ id: p, tEthBps: info.tEthBps, pLong: await marketPLong(snap.id, p) });
-          }
-          const d = forecasters.decide({ agent: def, features: f, round: snap, proposals, statusQuoBps });
-          logger.decision(def.key, { inputs: { ...inputs, tick, proposals: d.view ?? proposals }, action: d.action, reasoning: d.reasoning });
-          if (d.action !== 'trade') { fired.mark(fk(tick)); continue; }
-          try {
-            const credits = ledger.allowTrade(def.key, roundKey, d.proposalId, d.credits);
-            const have = { deposit: await roundDeposit(snap.id, a.signer.address), claimed: await creditsClaimed(snap.id, d.proposalId, a.signer.address), credits: await creditBalance(snap.id, d.proposalId, a.signer.address).catch(() => 0n) };
-            const steps = tradeSteps({ state, roundId: snap.id, proposalId: d.proposalId, credits, long: d.long, have });
-            for (const s of steps) await a.executor.run(s, { roundId: roundKey });
-            if (execute) ledger.recordTrade(def.key, roundKey, d.proposalId, credits);
-            fired.mark(fk(tick));
-          } catch (err) {
-            handleFailure(a, fk(tick), err);
-          }
+        const firedKey = `${roundKey}|${def.key}|propose`;
+        if (fired.has(firedKey)) continue;
+        const win = proposerWindow(timing, def);
+        if (now < win.opensAt) { nextWait = Math.min(nextWait, (win.opensAt - now) * 1000); logWait(def.key, { inputs, action: 'wait', reasoning: `proposal window opens in ${win.opensAt - now}s` }); continue; }
+        if (now > win.closesAt || !win.valid) { fired.mark(firedKey); logger.decision(def.key, { inputs, action: 'skip', reasoning: 'proposal window already closed' }); continue; }
+        const onChain = [];
+        for (let p = 1; p < Number(snap.proposalCount); p++) onChain.push((await proposalInfo(snap.id, p)).tEthBps);
+        const chosen = cycle.get(roundKey) ?? [];
+        const news = def.key === 'news' ? await headlinesNow() : { headlines: [] };
+        const d = await decideProposal({ def, candles: data.candles, statusQuoBps, others: [...onChain, ...chosen], headlines: news.headlines, env: process.env });
+        const reasoning = d.action === 'propose'
+          ? `${d.source}: raw ${d.rawBps} bps (z ${d.z?.toFixed(2)}), ${d.shifted ? `shifted to ${d.finalBps} bps (${d.shiftSide})` : 'no shift needed'}; ${d.why}`
+          : `skip: ${d.skipReason}`;
+        logger.decision(def.key, {
+          inputs: { ...inputs, existingProposalsBps: onChain, chosenThisCycleBps: chosen, headlines: news.headlines?.map((h) => h.title), newsError: news.error },
+          action: d.action, reasoning, source: d.source, rawBps: d.rawBps, finalBps: d.finalBps, shifted: d.shifted, shiftSide: d.shiftSide,
+          tEthBps: d.finalBps, rationale: d.rationale, signal: d.signal,
+        });
+        if (d.action !== 'propose') { fired.mark(firedKey); continue; }
+        try {
+          const steps = proposeSteps({ agentDef: def, state, roundId: snap.id, tEthBps: d.finalBps, rationale: d.rationale });
+          for (const s of steps) await a.executor.run(s, { roundId: roundKey });
+          cycle.set(roundKey, [...chosen, d.finalBps]);
+          fired.mark(firedKey);
+        } catch (err) {
+          handleFailure(a, firedKey, err);
         }
       }
       return { idle: false, wait: Math.max(1000, nextWait) };
@@ -203,16 +177,29 @@ export async function runAgents(argv = process.argv.slice(2)) {
       }
     }
 
-    do {
-      let wait = pollMs;
-      try {
-        ({ wait } = await pass());
-      } catch (err) {
-        logger.error(`pass failed: ${err.message}`);
-      }
-      if (args.once || stop.signal.aborted) break;
-      await sleep(wait);
-    } while (!stop.signal.aborted);
+    async function proposerLoop() {
+      if (!proposers.length) return; // nothing to propose: no candles, no news, no snapshot reads
+      do {
+        let wait = pollMs;
+        try {
+          ({ wait } = await pass());
+        } catch (err) {
+          logger.error(`pass failed: ${err.message}`);
+        }
+        if (args.once || stop.signal.aborted) break;
+        await sleep(wait);
+      } while (!stop.signal.aborted);
+    }
+
+    // Quant and Guardian: independent loops in this same process (one lock, one synchronous-write ledger).
+    const simulatedSource = args['simulate-round']
+      ? async () => ({ ...syntheticRound(args['simulate-round'], await chainNow()), proposalCount: 1, epsilon: 5n * 10n ** 15n })
+      : undefined;
+    const forecasting = buildForecasterRuntime({
+      agents, ledger, logger, execute, fired, stop, sleep, pollMs,
+      flags: { once: args.once, evaluateNow: args['evaluate-now'] }, roundSource: simulatedSource,
+    });
+    await Promise.all([proposerLoop(), forecasting?.run({ once: args.once })]);
     logger.info('agents stopped cleanly');
   } finally {
     lock.release();
