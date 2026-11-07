@@ -122,6 +122,8 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
     error AlreadyWired();
     error WiringIncomplete();
     error InvalidHookAdapter();
+    error InvalidQuantumRound(address round);
+    error QuantumRoundMarketMismatch(address market);
     error OwnershipLocked();
     error NotQuantumRound();
     error NotPoolManager();
@@ -171,6 +173,11 @@ contract WaveV4ProposalMarket is IProposalMarket, IUnlockCallback, Ownable, Reen
     function setQuantumRound(address round) external onlyOwner {
         if (quantumRound != address(0)) revert AlreadyWired();
         if (round == address(0)) revert ZeroAddress();
+        if (round.code.length == 0) revert InvalidQuantumRound(round);
+        (bool ok, bytes memory result) = round.staticcall(abi.encodeWithSignature("market()"));
+        if (!ok || result.length < 32) revert InvalidQuantumRound(round);
+        address boundMarket = abi.decode(result, (address));
+        if (boundMarket != address(this)) revert QuantumRoundMarketMismatch(boundMarket);
         quantumRound = round;
         emit QuantumRoundSet(round);
         _finishWiring();

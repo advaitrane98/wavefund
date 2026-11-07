@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
@@ -38,6 +39,7 @@ contract ProposerRegistry is AccessControl, ReentrancyGuard, Pausable {
 
     error ZeroAddress();
     error InvalidUSDC(address usdc);
+    error InvalidUSDCDecimals(uint8 actual);
     error SlashTreasuryNotSet();
     error AgentAlreadyRegistered(address proposer);
     error AgentNotRegistered(address proposer);
@@ -63,6 +65,8 @@ contract ProposerRegistry is AccessControl, ReentrancyGuard, Pausable {
     constructor(address admin, IERC20 usdc_) {
         if (admin == address(0) || address(usdc_) == address(0)) revert ZeroAddress();
         if (address(usdc_).code.length == 0) revert InvalidUSDC(address(usdc_));
+        uint8 decimals = IERC20Metadata(address(usdc_)).decimals();
+        if (decimals != 6) revert InvalidUSDCDecimals(decimals);
         usdc = usdc_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }

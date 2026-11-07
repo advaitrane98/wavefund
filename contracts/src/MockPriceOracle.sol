@@ -10,12 +10,19 @@ contract MockPriceOracle is AccessControl {
     bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
     uint256 public constant MAX_ORACLE_AGE = 5 minutes;
 
+    struct Observation {
+        int256 answer;
+        uint256 updatedAt;
+    }
+
+    Observation[] private _observations;
     int256 private _answer;
     uint256 private _updatedAt;
 
     error ZeroAddress();
     error InvalidPrice(int256 answer);
     error StalePrice(uint256 updatedAt, uint256 maxAge);
+    error ObservationNotFound(uint256 timestamp);
 
     event PriceUpdated(int256 answer, uint256 updatedAt);
 
@@ -53,10 +60,25 @@ contract MockPriceOracle is AccessControl {
         return _answer;
     }
 
+    /// @notice Earliest appended observation whose timestamp is at least `timestamp`.
+    function firstObservationAtOrAfter(uint256 timestamp) external view returns (int256 answer, uint256 updatedAt) {
+        uint256 low;
+        uint256 high = _observations.length;
+        while (low < high) {
+            uint256 mid = low + (high - low) / 2;
+            if (_observations[mid].updatedAt < timestamp) low = mid + 1;
+            else high = mid;
+        }
+        if (low == _observations.length) revert ObservationNotFound(timestamp);
+        Observation storage observation = _observations[low];
+        return (observation.answer, observation.updatedAt);
+    }
+
     function _storePrice(int256 answer) private {
         if (answer <= 0) revert InvalidPrice(answer);
         _answer = answer;
         _updatedAt = block.timestamp;
+        _observations.push(Observation(answer, _updatedAt));
         emit PriceUpdated(answer, _updatedAt);
     }
 }

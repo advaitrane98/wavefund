@@ -25,7 +25,7 @@ import {IAllocationSource, IQuantumRoundControl, RoundStatus} from "./interfaces
 
 /// @title WavefundVault
 /// @notice Holds USDC and tETH, issues WAVE shares, and moves the portfolio to each round's winning allocation.
-/// @dev Deposits and withdrawals are queued and processed only inside `executeTrade`, all at the same pre-flow NAV
+/// @dev Normal deposits and withdrawals are queued and processed inside `executeTrade` at the same pre-flow NAV
 ///      and share supply. NAV is marked at the oracle and uses ACCOUNTED balances (never `balanceOf`), so donations
 ///      cannot move the share price. USDC has 6 decimals, tETH and WAVE 18, the oracle 8 (USD per ETH).
 /// @custom:upgrade-strategy Immutable, non-upgradeable code keeps share accounting fixed; live role administration is not an upgrade mechanism.
@@ -38,6 +38,7 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
     struct Request {
         uint256 epoch;
         uint256 amount;
+        uint256 queuedAt;
     }
 
     /// @dev Aggregate result of one flow batch; individual claims are pro rata of these totals.
@@ -67,7 +68,10 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
     bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
     uint256 public constant MAX_ORACLE_AGE = 5 minutes;
     /// @notice A swap whose output is more than this many bps worse than the oracle-implied output is rolled back.
-    uint256 public constant maxSlippageBps = 500;
+    uint256 public maxSlippageBps = 100;
+    uint256 public constant MAX_SLIPPAGE_CAP_BPS = 500;
+    uint256 public constant WITHDRAW_EXIT_DELAY = 3 days;
+    uint256 private _executionSlippageBps;
     uint256 public constant MIN_DEPOSIT_REQUEST = 1e6;
     /// @notice A return can be reported only this long after evaluationEnd (afterwards the round's emergency settle applies).
     uint256 public constant REPORT_WINDOW = 1 days;
@@ -133,6 +137,9 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
     error ExceedsRescuable(uint256 requested, uint256 available);
     error NothingToClaim();
     error UnexpectedSwapDelta();
+    error WithdrawExitTooEarly(uint256 availableAt);
+    error InvalidSlippage(uint256 slippageBps);
+    error DeadlineExpired(uint256 deadline);
 
     event Wired(address indexed quantumRound, address indexed resolver);
     event VaultFunded(address indexed receiver, uint256 usdcAmount, uint256 tEthAmount, uint256 shares);
@@ -140,6 +147,8 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
     event DepositCancelled(address indexed user, uint256 amount);
     event WithdrawRequested(address indexed user, uint256 shares, uint256 totalRequested);
     event WithdrawCancelled(address indexed user, uint256 shares);
+    event EmergencyWithdrawn(address indexed user, uint256 indexed epoch, uint256 shares, uint256 usdcAmount, uint256 tEthAmount);
+    event MaxSlippageUpdated(uint256 slippageBps);
     event FlowsProcessed(
         uint256 indexed roundId,
         uint256 indexed epoch,
@@ -247,6 +256,13 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         token.safeTransfer(to, amount);
     }
 
+    /// @notice Sets the default execution tolerance, never above the hard cap.
+    function setMaxSlippageBps(uint16 slippageBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (slippageBps > MAX_SLIPPAGE_CAP_BPS) revert InvalidSlippage(slippageBps);
+        maxSlippageBps = slippageBps;
+        emit MaxSlippageUpdated(slippageBps);
+    }
+
     // ------------------------------------------------------------------ queues
 
     /// @notice Escrows USDC until the next `executeTrade` converts it to shares at the pre-flow NAV.
@@ -279,6 +295,8 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         if (shares == 0) revert ZeroAmount();
         _syncWithdraw(msg.sender);
         Request storage q = _withdrawRequests[msg.sender];
+        // Adding shares restarts the delay so newly escrowed shares cannot exit immediately.
+        q.queuedAt = block.timestamp;
         q.epoch = currentEpoch;
         q.amount += shares;
         queuedWithdrawShares += shares;
@@ -295,6 +313,34 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         queuedWithdrawShares -= shares;
         _transfer(address(this), msg.sender, shares);
         emit WithdrawCancelled(msg.sender, shares);
+    }
+
+    /// @notice Oracle-free in-kind exit of the caller's unprocessed escrow after the exit delay.
+    function emergencyWithdraw() external nonReentrant {
+        Request storage q = _withdrawRequests[msg.sender];
+        uint256 shares = q.amount;
+        if (shares == 0 || q.epoch != currentEpoch) revert NoRequest();
+        uint256 availableAt = q.queuedAt + WITHDRAW_EXIT_DELAY;
+        if (block.timestamp < availableAt) revert WithdrawExitTooEarly(availableAt);
+        uint256 supply = totalSupply();
+        uint256 usdcAmount = Math.mulDiv(shares, totalVaultUsdc, supply);
+        uint256 tEthAmount = Math.mulDiv(shares, totalVaultTEth, supply);
+        delete _withdrawRequests[msg.sender];
+        queuedWithdrawShares -= shares;
+        totalVaultUsdc -= usdcAmount;
+        totalVaultTEth -= tEthAmount;
+        _burn(address(this), shares);
+        // Current-epoch totals are populated only by _processFlows, from the reduced queue.
+        emit EmergencyWithdrawn(msg.sender, currentEpoch, shares, usdcAmount, tEthAmount);
+        if (tEthAmount != 0) tEth.safeTransfer(msg.sender, tEthAmount);
+        if (usdcAmount != 0) {
+            (bool ok, bytes memory ret) = address(usdc).call(abi.encodeCall(IERC20.transfer, (msg.sender, usdcAmount)));
+            if (!(ok && (ret.length == 0 || (ret.length >= 32 && abi.decode(ret, (uint256)) == 1)))) {
+                claimableUsdc[msg.sender] += usdcAmount;
+                claimableUsdcTotal += usdcAmount;
+                emit UsdcClaimable(msg.sender, usdcAmount);
+            }
+        }
     }
 
     /// @notice Collects `user`'s processed deposit shares and withdrawal USDC. Permissionless: it only ever pays `user`.
@@ -348,8 +394,21 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
     /// @notice KEEPER_ROLE, after the round collapsed. Needs an oracle update from the last 5 minutes. Marks NAV,
     ///         processes queued flows, then (unless proposal 0 won) swaps toward the winning allocation. If a swap's
     ///         output is more than `maxSlippageBps` worse than the oracle-implied output, the whole step is rolled
-    ///         back (flows stay queued) and the round is cancelled so it redeems at par.
+    ///         back with the original error (flows stay queued), allowing a retry before evaluationEnd.
     function executeTrade(uint256 roundId, uint256 winnerTEthBps) external onlyRole(KEEPER_ROLE) nonReentrant {
+        _executeTrade(roundId, winnerTEthBps, maxSlippageBps);
+    }
+
+    /// @notice Executes with a keeper-selected capped tolerance and an inclusive deadline.
+    function executeTrade(uint256 roundId, uint256 winnerTEthBps, uint16 slippageBps, uint256 deadline)
+        external onlyRole(KEEPER_ROLE) nonReentrant
+    {
+        if (slippageBps > MAX_SLIPPAGE_CAP_BPS) revert InvalidSlippage(slippageBps);
+        if (block.timestamp > deadline) revert DeadlineExpired(deadline);
+        _executeTrade(roundId, winnerTEthBps, slippageBps);
+    }
+
+    function _executeTrade(uint256 roundId, uint256 winnerTEthBps, uint256 slippageBps) private {
         if (address(quantumRound) == address(0)) revert NotWired();
         RoundState storage rs = _rounds[roundId];
         if (rs.executed || rs.cancelled) revert AlreadyProcessed(roundId);
@@ -358,17 +417,10 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         (uint256 winnerId, uint16 bps) = quantumRound.winningAllocation(roundId);
         if (bps != winnerTEthBps) revert WinnerMismatch(bps, winnerTEthBps);
         uint256 answer = _freshAnswer();
-        try this.processRound(roundId, winnerId == 0, bps, answer) {}
-        catch (bytes memory reason) {
-            if (reason.length < 4 || bytes4(reason) != SlippageBreached.selector) {
-                assembly ("memory-safe") {
-                    revert(add(reason, 32), mload(reason))
-                }
-            }
-            rs.cancelled = true;
-            emit TradeCancelled(roundId);
-            quantumRound.cancelRound(roundId);
-        }
+        _executionSlippageBps = slippageBps;
+        this.processRound(roundId, winnerId == 0, bps, answer);
+        quantumRound.markExecuted(roundId);
+        delete _executionSlippageBps;
     }
 
     /// @notice Permissionless: once a collapsed round's evaluation period has ended without an execution, the round can
@@ -408,19 +460,29 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         unreportedRound = roundId;
     }
 
-    /// @notice After evaluationEnd, with an oracle update published at or after it and still fresh, and within
-    ///         REPORT_WINDOW: R = NAV now / NAV at decision. Later, the round's emergency settle applies.
+    /// @notice Within REPORT_WINDOW after evaluationEnd, uses the first observation at or after evaluationEnd.
+    ///         R marks the executed portfolio at that observation / NAV at decision. Later, emergency settle applies.
     function reportReturn(uint256 roundId) external nonReentrant {
         RoundState storage rs = _rounds[roundId];
         if (!rs.executed) revert NotExecuted(roundId);
         if (rs.reported) revert AlreadyReported(roundId);
         uint256 end = quantumRound.evaluationEnd(roundId);
         if (block.timestamp < end) revert EvaluationNotEnded(roundId);
-        (int256 answer, uint256 updatedAt) = oracle.latestPrice();
-        if (updatedAt < end) revert OracleNotUpdated(updatedAt, end);
         if (block.timestamp > end + REPORT_WINDOW) revert ReportWindowClosed(roundId);
-        if (block.timestamp - updatedAt > MAX_ORACLE_AGE) revert OracleStale(updatedAt);
-        uint256 navNow = totalVaultUsdc + _valueOf(totalVaultTEth, uint256(answer));
+        int256 answer;
+        uint256 updatedAt;
+        try oracle.firstObservationAtOrAfter(end) returns (int256 observedAnswer, uint256 observedAt) {
+            answer = observedAnswer;
+            updatedAt = observedAt;
+        } catch (bytes memory reason) {
+            if (reason.length >= 4 && bytes4(reason) == MockPriceOracle.ObservationNotFound.selector) {
+                revert OracleNotUpdated(0, end);
+            }
+            assembly ("memory-safe") { revert(add(reason, 32), mload(reason)) }
+        }
+        if (updatedAt > end + REPORT_WINDOW) revert ReportWindowClosed(roundId);
+        // In-kind emergency exits must not change the executed portfolio's measured return.
+        uint256 navNow = rs.usdcAtStart + _valueOf(rs.tEthAtStart, uint256(answer));
         uint256 start = rs.startValueUsdc;
         uint256 r = start == 0 ? ONE : Math.mulDiv(navNow, ONE, start);
         rs.reported = true;
@@ -499,13 +561,19 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         uint256 nav0 = totalVaultUsdc + _valueOf(totalVaultTEth, answer);
         uint256 deposited = queuedDepositsUsdc;
         uint256 withdrawing = queuedWithdrawShares;
-        if (supply0 == 0 || nav0 == 0 || (deposited == 0 && withdrawing == 0)) return;
+        if ((supply0 != 0 && nav0 == 0) || (deposited == 0 && withdrawing == 0)) return;
 
         Epoch storage e = epochs[currentEpoch];
         uint256 mintedShares;
         uint256 paidUsdc;
         if (deposited != 0) {
-            mintedShares = Math.mulDiv(deposited, supply0, nav0);
+            // Match fundVault's first mint, independent of NAV or donated token balances.
+            // With no outstanding shares, any leftover accounted USDC/tETH belongs to this
+            // bootstrap batch; it must not affect the mint rate or dilute queued depositors.
+            // A zero supply also implies no queued withdrawals: those shares are escrowed, not burned.
+            mintedShares = supply0 == 0
+                ? deposited * INITIAL_SHARES_PER_USDC
+                : Math.mulDiv(deposited, supply0, nav0);
             e.depositUsdc = deposited;
             e.depositShares = mintedShares;
             e.depositUsdcLeft = deposited;
@@ -542,7 +610,7 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
     {
         uint256 shortfall = owed - totalVaultUsdc;
         uint256 expectedIn = Math.mulDiv(shortfall, PRICE_DIVISOR, answer, Math.Rounding.Ceil);
-        uint256 maxIn = Math.mulDiv(expectedIn, BPS + maxSlippageBps, BPS);
+        uint256 maxIn = Math.mulDiv(expectedIn, BPS + _executionSlippageBps, BPS);
         if (maxIn <= totalVaultTEth) {
             (uint256 amountIn, uint256 amountOut) = _swap(false, false, shortfall, maxIn);
             totalVaultTEth -= amountIn;
@@ -553,7 +621,7 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         uint256 all = totalVaultTEth;
         if (all != 0) {
             (uint256 spent, uint256 got) =
-                _swap(false, true, all, Math.mulDiv(_valueOf(all, answer), BPS - maxSlippageBps, BPS));
+                _swap(false, true, all, Math.mulDiv(_valueOf(all, answer), BPS - _executionSlippageBps, BPS));
             totalVaultTEth -= spent;
             totalVaultUsdc += got;
             emit Swapped(roundId, false, spent, got);
@@ -571,7 +639,7 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
             uint256 spend = Math.min(targetValue - tEthValue, totalVaultUsdc);
             if (spend == 0) return (0, 0);
             uint256 expected = Math.mulDiv(spend, PRICE_DIVISOR, answer);
-            (amountIn, amountOut) = _swap(true, true, spend, Math.mulDiv(expected, BPS - maxSlippageBps, BPS));
+            (amountIn, amountOut) = _swap(true, true, spend, Math.mulDiv(expected, BPS - _executionSlippageBps, BPS));
             totalVaultUsdc -= amountIn;
             totalVaultTEth += amountOut;
             emit Swapped(roundId, true, amountIn, amountOut);
@@ -579,7 +647,7 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
             uint256 sell = Math.min(Math.mulDiv(tEthValue - targetValue, PRICE_DIVISOR, answer), totalVaultTEth);
             if (sell == 0) return (0, 0);
             uint256 expected = _valueOf(sell, answer);
-            (amountIn, amountOut) = _swap(false, true, sell, Math.mulDiv(expected, BPS - maxSlippageBps, BPS));
+            (amountIn, amountOut) = _swap(false, true, sell, Math.mulDiv(expected, BPS - _executionSlippageBps, BPS));
             totalVaultTEth -= amountIn;
             totalVaultUsdc += amountOut;
             emit Swapped(roundId, false, amountIn, amountOut);
@@ -594,21 +662,32 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         returns (uint256 amountIn, uint256 amountOut)
     {
         bool zeroForOne = usdcToTEth == usdcIsCurrency0;
-        bytes memory result = poolManager.unlock(abi.encode(zeroForOne, exactIn, amount, limit));
+        uint256 answer = _latestAnswer();
+        uint256 lowAnswer = Math.mulDiv(answer, BPS - _executionSlippageBps, BPS, Math.Rounding.Ceil);
+        uint256 highAnswer = Math.mulDiv(answer, BPS + _executionSlippageBps, BPS);
+        uint160 lower = _sqrtPriceAtAnswer(usdcIsCurrency0 ? highAnswer : lowAnswer, true);
+        uint160 upper = _sqrtPriceAtAnswer(usdcIsCurrency0 ? lowAnswer : highAnswer, false);
+        (uint160 price,,,) = poolManager.getSlot0(poolKey.toId());
+        if (price < lower || price > upper || (zeroForOne ? price <= lower : price >= upper)) {
+            revert SlippageBreached(zeroForOne ? lower : upper, price);
+        }
+        uint160 sqrtPriceLimitX96 = zeroForOne ? lower : upper;
+        bytes memory result = poolManager.unlock(abi.encode(zeroForOne, exactIn, amount, limit, sqrtPriceLimitX96));
         (amountIn, amountOut) = abi.decode(result, (uint256, uint256));
     }
 
     /// @inheritdoc IUnlockCallback
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
-        (bool zeroForOne, bool exactIn, uint256 amount, uint256 limit) = abi.decode(data, (bool, bool, uint256, uint256));
+        (bool zeroForOne, bool exactIn, uint256 amount, uint256 limit, uint160 sqrtPriceLimitX96) =
+            abi.decode(data, (bool, bool, uint256, uint256, uint160));
         PoolKey memory key = poolKey;
         BalanceDelta delta = poolManager.swap(
             key,
             SwapParams({
                 zeroForOne: zeroForOne,
                 amountSpecified: exactIn ? -int256(amount) : int256(amount),
-                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+                sqrtPriceLimitX96: sqrtPriceLimitX96
             }),
             ""
         );
@@ -632,6 +711,42 @@ contract WavefundVault is ERC20, AccessControl, ReentrancyGuard, IUnlockCallback
         poolManager.settle();
         poolManager.take(outCurrency, address(this), amountOut);
         return abi.encode(amountIn, amountOut);
+    }
+
+    /// @dev Binary-searches sqrt(raw currency1/currency0) * 2^96 using full-width rational comparisons.
+    ///      Lower band endpoints round up, upper endpoints round down, then clamp to v4's valid limits.
+    function _sqrtPriceAtAnswer(uint256 answer, bool roundUp) private view returns (uint160) {
+        uint256 numerator = usdcIsCurrency0 ? PRICE_DIVISOR : answer;
+        uint256 denominator = usdcIsCurrency0 ? answer : PRICE_DIVISOR;
+        uint256 low = TickMath.MIN_SQRT_PRICE + 1;
+        uint256 high = TickMath.MAX_SQRT_PRICE - 1;
+        while (low < high) {
+            uint256 mid = low + (high - low + 1) / 2;
+            (bool atMost,) = _squareAtMost(mid, numerator, denominator);
+            if (atMost) low = mid;
+            else high = mid - 1;
+        }
+        (bool atMost, bool exact) = _squareAtMost(low, numerator, denominator);
+        if (roundUp && atMost && !exact && low < TickMath.MAX_SQRT_PRICE - 1) ++low;
+        return uint160(low);
+    }
+
+    /// @dev Compares sqrtP^2 * denominator to numerator * 2^192 without intermediate overflow.
+    function _squareAtMost(uint256 sqrtP, uint256 numerator, uint256 denominator)
+        private pure returns (bool atMost, bool exact)
+    {
+        (uint256 squareHigh, uint256 squareLow) = Math.mul512(sqrtP, sqrtP);
+        (uint256 carry, uint256 low) = Math.mul512(squareLow, denominator);
+        (uint256 high, uint256 middle) = Math.mul512(squareHigh, denominator);
+        unchecked {
+            uint256 combined = middle + carry;
+            if (combined < middle) ++high;
+            middle = combined;
+        }
+        uint256 targetMiddle = numerator >> 64;
+        uint256 targetLow = numerator << 192;
+        atMost = high == 0 && (middle < targetMiddle || (middle == targetMiddle && low <= targetLow));
+        exact = high == 0 && middle == targetMiddle && low == targetLow;
     }
 
     // ------------------------------------------------------------------ helpers

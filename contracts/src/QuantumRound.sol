@@ -87,6 +87,7 @@ contract QuantumRound is IQuantumRound, IQuantumRoundControl, AccessControl, Ree
     uint256 public protocolLiquiditySeed;
     uint256 public currentRoundId;
 
+    mapping(uint256 roundId => bool) private _executed;
     mapping(uint256 roundId => Round) public rounds;
     mapping(uint256 roundId => mapping(uint256 proposalId => Proposal)) public proposals;
     mapping(uint256 roundId => mapping(address user => uint256)) public deposits;
@@ -98,6 +99,8 @@ contract QuantumRound is IQuantumRound, IQuantumRoundControl, AccessControl, Ree
     error ZeroAddress();
     error ZeroAmount();
     error InvalidParameters();
+    error RegistryAssetMismatch(address registryUsdc, address roundUsdc);
+    error AlreadyExecuted(uint256 roundId);
     error InvalidAllocation(uint256 tEthBps);
     error AllocationSourceNotSet();
     error PreviousRoundActive(uint256 roundId);
@@ -148,6 +151,8 @@ contract QuantumRound is IQuantumRound, IQuantumRoundControl, AccessControl, Ree
                 || address(registry_) == address(0) || address(market_) == address(0)
         ) revert ZeroAddress();
         if (IERC20Metadata(address(usdc_)).decimals() != 6) revert InvalidParameters();
+        address registryUsdc = address(registry_.usdc());
+        if (registryUsdc != address(usdc_)) revert RegistryAssetMismatch(registryUsdc, address(usdc_));
         usdc = usdc_;
         tokens = tokens_;
         registry = registry_;
@@ -403,7 +408,10 @@ contract QuantumRound is IQuantumRound, IQuantumRoundControl, AccessControl, Ree
         emit Collapsed(roundId, winner, twaps);
     }
 
-    /// @notice VAULT_ROLE only: the vault's slippage guard. A cancelled round redeems deposits at par.
+    /// @notice VAULT_ROLE only. Called by the vault's permissionless `cancelUnexecutedRound` once a collapsed round's
+    ///         evaluation period has ended without an execution. A failed execution (for example a swap outside the
+    ///         oracle band) does NOT cancel the round: it reverts and the keeper can retry until `evaluationEnd`.
+    ///         A cancelled round redeems deposits at par.
     function cancelRound(uint256 roundId) external onlyRole(VAULT_ROLE) nonReentrant {
         Round storage rd = rounds[roundId];
         if (rd.status != RoundStatus.Collapsed) revert NotCollapsed(roundId);
@@ -412,9 +420,20 @@ contract QuantumRound is IQuantumRound, IQuantumRoundControl, AccessControl, Ree
         _releaseIfClear(roundId, rd);
     }
 
+    /// @notice VAULT_ROLE records a successful execution exactly once while collapsed.
+    function markExecuted(uint256 roundId) external onlyRole(VAULT_ROLE) {
+        if (rounds[roundId].status != RoundStatus.Collapsed) revert NotCollapsed(roundId);
+        if (_executed[roundId]) revert AlreadyExecuted(roundId);
+        _executed[roundId] = true;
+    }
+
+    function roundExecuted(uint256 roundId) external view returns (bool) {
+        return _executed[roundId];
+    }
+
     /// @notice RESOLVER_ROLE after evaluationEnd with the realised return ratio (1e18).
     /// @dev Anyone may call after evaluationEnd + EMERGENCY_SETTLE_DELAY, but then the supplied value is IGNORED and
-    ///      the round settles at the midpoint of [rMin, rMax], so a stranger can never choose the outcome.
+    ///      executed rounds settle at the midpoint of [rMin, rMax]; unexecuted rounds cancel at par.
     function settle(uint256 roundId, uint256 realisedReturn) external nonReentrant {
         Round storage rd = rounds[roundId];
         if (rd.status != RoundStatus.Collapsed) revert NotCollapsed(roundId);
@@ -423,6 +442,12 @@ contract QuantumRound is IQuantumRound, IQuantumRoundControl, AccessControl, Ree
         uint256 value = realisedReturn;
         if (emergency) {
             if (block.timestamp < uint256(rd.evaluationEnd) + EMERGENCY_SETTLE_DELAY) revert NotAuthorizedToSettle();
+            if (!_executed[roundId]) {
+                rd.status = RoundStatus.Cancelled;
+                emit RoundCancelled(roundId);
+                _releaseIfClear(roundId, rd);
+                return;
+            }
             value = (rd.rMin + rd.rMax) / 2;
         }
         uint256 clamped = Math.min(Math.max(value, rd.rMin), rd.rMax);

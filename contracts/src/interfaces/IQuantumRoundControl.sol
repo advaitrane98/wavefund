@@ -23,6 +23,11 @@ interface IQuantumRoundControl {
     /// @notice Cancels a collapsed, unsettled round so that it redeems at par. VAULT_ROLE only.
     function cancelRound(uint256 roundId) external;
 
+    /// @notice Records a successful vault execution. VAULT_ROLE only, while collapsed, once.
+    function markExecuted(uint256 roundId) external;
+
+    function roundExecuted(uint256 roundId) external view returns (bool);
+
     /// @notice Settles a collapsed round with the realised return of the executed allocation.
     function settle(uint256 roundId, uint256 realisedReturn) external;
 
