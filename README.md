@@ -9,7 +9,7 @@ AI agents propose allocations for a shared USDC vault. Forecasters bet on how th
 | **Event** | ETHGlobal Mumbai |
 | **Chain** | Arc testnet (Circle's stablecoin-native L1, USDC as gas) |
 | **Targets** | Arc "Best DeFi / Onchain Finance App Built End to End in Arc Studio"; Uniswap Foundation "Build with Uniswap" |
-| **Status** | Testnet prototype. Current addresses: [`contracts/deployments/current.json`](contracts/deployments/current.json), including vault [`0x9f0D…09a19`](https://explorer.testnet.arc.io/address/0x9f0D3c05AE079A9C19e676096239A817D2709a19). A3 is implemented and checked offline; A4 live rehearsals remain deferred. Evidence record: [`demo-round.md`](demo-round.md). Resolution uses the trusted keeper-updated ETH/USD feed. |
+| **Status** | Testnet prototype. Current addresses: [deployed contracts](#deployed-contract-addresses), including vault [`0x2ba9…799f`](https://explorer.testnet.arc.io/address/0x2ba9271420082d05373282a9c6EFcB416acf799f). A3 is implemented and checked offline; A4 live rehearsals remain deferred. Evidence record: [`demo-round.md`](demo-round.md). Resolution uses the trusted keeper-updated ETH/USD feed. |
 | **Based on** | [Quantum Markets](https://www.paradigm.xyz/writing/quantum-markets), Alpin Yukseloglu and Sofiane Larbi (Paradigm, June 2025). Implemented from scratch. |
 
 ## Contents
@@ -218,7 +218,7 @@ Rounds run sequentially. Vault deposits and withdrawals queue and take effect on
 
 ## Smart contracts
 
-Contract sources are in `contracts/src`; addresses are recorded in [`contracts/deployments/current.json`](contracts/deployments/current.json). Run `npm run check:contracts` to check the configured deployment; this change does not claim a new deployment or live verification.
+Contract sources are in `contracts/src`. The latest supplied Arc testnet addresses are listed below. Operator scripts still read [`contracts/deployments/current.json`](contracts/deployments/current.json), which contains the previous deployment; updating this README does not update script configuration or verify the deployment on-chain.
 
 | Contract | Responsibility |
 |---|---|
@@ -230,6 +230,28 @@ Contract sources are in `contracts/src`; addresses are recorded in [`contracts/d
 | `Resolver` | Forwards the vault's measured return to `QuantumRound.settle` |
 | `ProposerRegistry` | Registered proposers, bond locking and refunds, win records |
 | `MockPriceOracle`, `TestAsset` | Keeper-updated ETH/USD and the mock tETH token |
+
+### Deployed contract addresses
+
+Arc testnet (chain ID `5042002`).
+
+| Contract | Address |
+|---|---|
+| `usdc` | [`0x3600000000000000000000000000000000000000`](https://explorer.testnet.arc.io/address/0x3600000000000000000000000000000000000000) |
+| `testAsset` | [`0xDeA9A56A10BCFbd86717fb5Dd58e2eb52255688f`](https://explorer.testnet.arc.io/address/0xDeA9A56A10BCFbd86717fb5Dd58e2eb52255688f) |
+| `proposalTokens` | [`0x14CE21b275616c46EBfe45e19b03f1a61cbbf208`](https://explorer.testnet.arc.io/address/0x14CE21b275616c46EBfe45e19b03f1a61cbbf208) |
+| `proposerRegistry` | [`0x113120Cf3D8f55d155e069E5952A2aFa5E94b012`](https://explorer.testnet.arc.io/address/0x113120Cf3D8f55d155e069E5952A2aFa5E94b012) |
+| `market` | [`0x77320698947AeB2EF5B740fa893f6358EBe1C034`](https://explorer.testnet.arc.io/address/0x77320698947AeB2EF5B740fa893f6358EBe1C034) |
+| `waveHook` | [`0xc40F5F9F856eF0b64bC3fDc0AE8837CAac4c8ac0`](https://explorer.testnet.arc.io/address/0xc40F5F9F856eF0b64bC3fDc0AE8837CAac4c8ac0) |
+| `quantumRound` | [`0x9E4aD1833F16C3dc6B6b18708aE086fa003e8dEF`](https://explorer.testnet.arc.io/address/0x9E4aD1833F16C3dc6B6b18708aE086fa003e8dEF) |
+| `resolver` | [`0x33CA9beAEEA9f44457C6ff4FAfB694177cC55252`](https://explorer.testnet.arc.io/address/0x33CA9beAEEA9f44457C6ff4FAfB694177cC55252) |
+| `vault` | [`0x2ba9271420082d05373282a9c6EFcB416acf799f`](https://explorer.testnet.arc.io/address/0x2ba9271420082d05373282a9c6EFcB416acf799f) |
+| `priceOracle` | [`0x394E1E7609a9a8E8AB60d359f77960afC488D78c`](https://explorer.testnet.arc.io/address/0x394E1E7609a9a8E8AB60d359f77960afC488D78c) |
+| `crePriceReceiver` | [`0xcf4edC109B47BeF93Ad27e72C8DD906A5c94838e`](https://explorer.testnet.arc.io/address/0xcf4edC109B47BeF93Ad27e72C8DD906A5c94838e) |
+| `poolManager` | [`0x2756F3F7bFAf103F4c550f4d24CdCa82B093240A`](https://explorer.testnet.arc.io/address/0x2756F3F7bFAf103F4c550f4d24CdCa82B093240A) |
+| `positionManager` | [`0x87Dd714940ea540c921a92216e6E0DE1E2b1735C`](https://explorer.testnet.arc.io/address/0x87Dd714940ea540c921a92216e6E0DE1E2b1735C) |
+| `permit2` | [`0x000000000022D473030F116dDEE9F6B43aC78BA3`](https://explorer.testnet.arc.io/address/0x000000000022D473030F116dDEE9F6B43aC78BA3) |
+| `v4Callback` | [`0xf50B32E596f98e52cE5BC656d8a8C94372e6A757`](https://explorer.testnet.arc.io/address/0xf50B32E596f98e52cE5BC656d8a8C94372e6A757) |
 
 ```solidity
 // QuantumRound
