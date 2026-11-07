@@ -145,7 +145,7 @@ export function createForecasterRuntime({
     return g.ctx;
   }
 
-  async function guardianPass() {
+  async function evaluateGuardian() {
     const a = ctxs.get('guardian');
     if (!a) return { wait: pollMs };
     const t0 = perfMs();
@@ -224,6 +224,26 @@ export function createForecasterRuntime({
     sweepInBackground(a, ctx.id);
     const every = (finalWindow ? cfg.guardianEverySec.inside : cfg.guardianEverySec.outside) * 1000;
     return { wait: Math.max(250, every - passMs), passMs, rows, leader, ids, multicalls, inflight: a.inflight };
+  }
+
+  async function guardianPass() {
+    const start = perfMs();
+    const record = (action, reason) => {
+      const passMs = Math.round(perfMs() - start);
+      logger.decision('guardian', {
+        inputs: { passMs, withinBudget: passMs < cfg.guardianPassBudgetMs, budgetMs: cfg.guardianPassBudgetMs, mode: execute ? 'execute' : 'dry-run' },
+        action, reasoning: reason,
+      });
+      return passMs;
+    };
+    try {
+      const result = await evaluateGuardian();
+      if (ctxs.has('guardian') && result.passMs == null) result.passMs = record(result.idle ? 'idle' : 'resync', result.reason ?? 'no trading round');
+      return result;
+    } catch (err) {
+      if (ctxs.has('guardian')) record('failed', err.message);
+      throw err;
+    }
   }
 
   async function intervene(a, ctx, jobs, threshold) {

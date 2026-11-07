@@ -54,6 +54,7 @@ export const MUTANTS = [
   ['no pending wallet gate', 'agents/lib/trader.mjs', 'if (execute && ledger.unresolvedTradeReservations().some((r) => r.key.startsWith(`${agent.key}|`)))', 'if (false)'],
   ['keeper opens a third round', 'scripts/keeper-run.mjs', "if (r.action === 'idle' && roundsOpened >= maxRounds) {", 'if (false) {'],
   ['strike allows zero minimum output', 'scripts/demo-manipulate.mjs', 'minOutFromQuote(quote)]', '0n]'],
+  ['failed Guardian passes disappear', 'agents/lib/forecasters.mjs', "if (ctxs.has('guardian')) record('failed', err.message);", "if (false) record('failed', err.message);"],
 ];
 
 function copyTree() {

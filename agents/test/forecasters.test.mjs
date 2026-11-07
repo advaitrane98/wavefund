@@ -17,7 +17,7 @@ const FAIR = { 0: 0.5125, 1: 0.5175, 2: 0.5075 }; // drift capped at 5e-5/min, 1
 
 function build({
   execute = true, pools, tEthBps = [5000, 7000, 3000], now = NOW, tradingEnd = NOW + 400, only, gateQuant, gateGuardian, failGuardian, flags = {}, nowMs,
-  makeExecutors,
+  makeExecutors, perfMs,
 } = {}) {
   const r = rig({ execute });
   const w = makeWorld({ pools: pools ?? [makeLogPool({ pLong: 0.5 }), makeLogPool({ pLong: 0.56 }), makeLogPool({ pLong: 0.52 })], tEthBps, now, tradingEnd });
@@ -37,7 +37,7 @@ function build({
   const stop = new AbortController();
   const runtime = createForecasterRuntime({
     agents: all, ledger: r.ledger, logger: r.logger, execute, fired: r.fired, model, reads: w.reads, roundSource: () => w.reads.roundContext(),
-    sleep: async () => {}, stop, flags: { once: true, ...flags }, nowMs: nowMs ?? (() => clockMs.v),
+    sleep: async () => {}, stop, flags: { once: true, ...flags }, nowMs: nowMs ?? (() => clockMs.v), ...(perfMs ? { perfMs } : {}),
   });
   const logs = () => readJsonl(r.logger.file());
   return { ...r, w, market, fetches, model, runtime, calls, clockMs, stop, logs, all };
@@ -195,6 +195,31 @@ test('exactly ONE prices multicall per steady-state pass, and the pass duration 
   assert.equal(typeof d.passMs, 'number');
   assert.equal(d.withinBudget, true);
   assert.equal(d.budgetMs, 3000);
+});
+
+test('Guardian records failed pass duration and includes slow failures in the budget metric', async () => {
+  let clock = 0;
+  const t = build({ execute: false, perfMs: () => { clock += 2000; return clock; } });
+  t.logger.info('start failed-pass fixture'); // Missing decisions must fail the assertion, not file opening.
+  t.w.reads.guardianBatch = async () => { throw new Error('RPC unavailable'); };
+  await assert.rejects(t.runtime.guardianPass(), /RPC unavailable/);
+  const failed = decisions(t, 'guardian').find(d => d.action === 'failed');
+  assert.ok(failed, 'failed evaluations must remain visible to latency reports');
+  assert.equal(failed.inputs.passMs, 4000);
+  assert.equal(failed.inputs.withinBudget, false);
+  assert.equal(t.calls.guardian.length, 0);
+});
+
+test('Guardian records idle pass duration without sending a transaction', async () => {
+  let clock = 0;
+  const t = build({ execute: false, perfMs: () => ++clock });
+  t.w.status = 3;
+  const result = await t.runtime.guardianPass();
+  assert.equal(result.idle, true);
+  const idle = decisions(t, 'guardian').find(d => d.action === 'idle');
+  assert.ok(idle, 'idle evaluations must be counted as passes');
+  assert.ok(idle.inputs.passMs > 0);
+  assert.equal(t.calls.guardian.length, 0);
 });
 
 test('a round change refreshes the header and defers prices to the next pass', async () => {
