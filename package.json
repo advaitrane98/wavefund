@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "description": "Operator scripts for Wavefund on Arc Testnet (Node ESM + viem). The Next.js app lives in frontend/.",
-  "engines": { "node": ">=22.9" },
+  "engines": {
+    "node": ">=22.9"
+  },
   "scripts": {
     "abi:export": "node scripts/export-abis.mjs",
     "forge:deploy": "node --env-file-if-exists=.env scripts/forge-run.mjs Deploy",
@@ -27,9 +29,16 @@
     "wallets:create": "node --env-file-if-exists=.env scripts/wallets-create.mjs",
     "smoke:round": "node --env-file-if-exists=.env scripts/smoke-round.mjs",
     "verify:contracts": "node --env-file-if-exists=.env scripts/verify-contracts.mjs",
-    "write:sources": "node --env-file-if-exists=.env scripts/write-sources.mjs"
+    "write:sources": "node --env-file-if-exists=.env scripts/write-sources.mjs",
+    "agents:setup": "node --env-file-if-exists=.env agents/setup.mjs",
+    "agents:fund": "node --env-file-if-exists=.env agents/fund.mjs",
+    "agents:fund:proposers": "node --env-file-if-exists=.env agents/fund.mjs --group proposers",
+    "agents:fund:forecasters": "node --env-file-if-exists=.env agents/fund.mjs --group forecasters",
+    "agents:run": "node --env-file-if-exists=.env agents/run.mjs",
+    "agents:test": "node --test agents/test/*.test.mjs"
   },
   "dependencies": {
+    "@circle-fin/developer-controlled-wallets": "^10.8.1",
     "viem": "^2.21.0"
   }
 }
