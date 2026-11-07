@@ -52,6 +52,8 @@ export const MUTANTS = [
   ['expired reference allowed', 'agents/lib/model-provider.mjs', 'age() < Math.min(ttlMs, maxStaleMs)', 'age() < 180_000'],
   ['no resize after prerequisites', 'agents/lib/trader.mjs', 'if (prerequisite.length) {', 'if (false) {'],
   ['no pending wallet gate', 'agents/lib/trader.mjs', 'if (execute && ledger.unresolvedTradeReservations().some((r) => r.key.startsWith(`${agent.key}|`)))', 'if (false)'],
+  ['keeper opens a third round', 'scripts/keeper-run.mjs', "if (r.action === 'idle' && roundsOpened >= maxRounds) {", 'if (false) {'],
+  ['strike allows zero minimum output', 'scripts/demo-manipulate.mjs', 'minOutFromQuote(quote)]', '0n]'],
 ];
 
 function copyTree() {
@@ -59,7 +61,9 @@ function copyTree() {
 }
 
 function runSuite(dir) {
-  return spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...fs.readdirSync(path.join(dir, 'agents', 'test')).filter((f) => !f.startsWith('.') && f.endsWith('.test.mjs')).map((f) => `agents/test/${f}`)], {
+  const tests = ['agents/test', 'scripts/test'].flatMap(folder => fs.existsSync(path.join(dir, folder))
+    ? fs.readdirSync(path.join(dir, folder)).filter(f => !f.startsWith('.') && f.endsWith('.test.mjs')).map(f => `${folder}/${f}`) : []);
+  return spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...tests], {
     cwd: dir, encoding: 'utf8', timeout: 120_000, env: { PATH: process.env.PATH, HOME: process.env.HOME },
   });
 }
