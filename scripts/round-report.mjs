@@ -3,6 +3,7 @@ import { abis, cliArgs, loadBook, publicClient, read, txUrl, usdc } from './demo
 import { STATUS, snapshot } from './lib/round-actions.mjs';
 import { printReconcile, reconcile } from './lib/reconcile.mjs';
 import { testWallets } from './demo-round-common.mjs';
+import { readAgentsFile } from '../agents/lib/files.mjs';
 
 const args = cliArgs({ round: { type: 'string' } });
 const book = loadBook();
@@ -53,4 +54,8 @@ for (const { name, l } of mine) {
   console.log(`  ${name}.${l.eventName} ${a}  ${txUrl(l.transactionHash)}`);
 }
 console.log('\nReconciliation');
-printReconcile(await reconcile(testWallets().map((w) => w.address)));
+const holders = [...new Set([
+  ...testWallets().map(w => w.address), ...readAgentsFile().map(a => a.address), book.deployer, book.keeper,
+].filter(Boolean).map(a => a.toLowerCase()))];
+console.log(`Pending payout holders counted: ${holders.join(', ')}`);
+if (!printReconcile(await reconcile(holders))) process.exitCode = 1;

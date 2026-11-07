@@ -305,6 +305,25 @@ Forge simulation does not support Arc's blocklist precompile, so USDC-moving ope
 
 ---
 
+## Demo preparation and known limitations
+
+See [DEMO.md](DEMO.md) for the ordered commands, full/judge rehearsals, four-minute presentation and recovery steps.
+[demo-round.md](demo-round.md) records attempted rounds and their evidence. **A4 live testing is deferred; no successful live round
+is claimed by this change.** Quant/Guardian implementation and offline checks are described in [agents/README.md](agents/README.md).
+`npm run ops:test` checks the two-round keeper stop and deployer strike with fake chain actions; it makes no network calls.
+
+- **Thin liquidity:** small trades can move proposal prices substantially; credit and gas caps bound an agent's intervention.
+- **Final seconds:** agent polling, signing and mining take time. Trades in the final seconds may not be countered before close;
+  TWAP and Guardian are not a guarantee against manipulation.
+- **Trusted keeper and oracle:** the keeper drives round progression and supplies `MockPriceOracle` observations. Availability,
+  correct prices and timing remain trust assumptions; tETH is a test asset.
+- **Vault withdrawal fee limitation:** withdrawing may require selling tETH, incurring fees and price impact. The ordinary
+  exact-output path charges the cost to the vault; near-total exits can receive a haircut with liquidation losses shared across
+  shares. Displayed pre-flow NAV is not a guarantee of a fee-free cash exit. See `_processFlows` / `_fundWithdrawals` in
+  [`WavefundVault.sol`](contracts/src/WavefundVault.sol).
+
+---
+
 ## Run and test
 
 ```bash
