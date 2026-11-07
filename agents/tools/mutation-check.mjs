@@ -55,6 +55,9 @@ export const MUTANTS = [
   ['keeper opens a third round', 'scripts/keeper-run.mjs', "if (r.action === 'idle' && roundsOpened >= maxRounds) {", 'if (false) {'],
   ['strike allows zero minimum output', 'scripts/demo-manipulate.mjs', 'minOutFromQuote(quote)]', '0n]'],
   ['failed Guardian passes disappear', 'agents/lib/forecasters.mjs', "if (ctxs.has('guardian')) record('failed', err.message);", "if (false) record('failed', err.message);"],
+  ['event scan skips blocks', 'scripts/lib/read-events.mjs', 'from = end + 1n;', 'from = end + 2n;'],
+  ['reconciliation loses its report block', 'scripts/lib/reconcile.mjs', 'reader(address, abi, fn, args, { blockNumber })', 'reader(address, abi, fn, args, {})'],
+  ['round snapshot loses its report block', 'scripts/lib/round-actions.mjs', 'reader(address, abi, fn, args, { blockNumber })', 'reader(address, abi, fn, args, {})'],
 ];
 
 function copyTree() {

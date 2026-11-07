@@ -16,20 +16,21 @@ export const MARKETS_NEEDED = 4n; // status quo + 3 agent proposals
 
 // ---------------------------------------------------------------- reading
 
-export async function snapshot(roundId) {
+export async function snapshot(roundId, { blockNumber, reader = read, getBlock = (options) => publicClient.getBlock(options) } = {}) {
   const book = loadBook();
   const A = abis();
-  const id = roundId ?? (await read(book.c.QuantumRound, A.QuantumRound, 'currentRoundId'));
+  const readAt = (address, abi, fn, args = []) => reader(address, abi, fn, args, { blockNumber });
+  const id = roundId ?? (await readAt(book.c.QuantumRound, A.QuantumRound, 'currentRoundId'));
   if (id === 0n) return null;
-  const r = await read(book.c.QuantumRound, A.QuantumRound, 'rounds', [id]);
-  const v = await read(book.c.WavefundVault, A.WavefundVault, 'roundState', [id]);
+  const r = await readAt(book.c.QuantumRound, A.QuantumRound, 'rounds', [id]);
+  const v = await readAt(book.c.WavefundVault, A.WavefundVault, 'roundState', [id]);
   return {
     id,
     tradingStart: Number(r[0]), tradingEnd: Number(r[1]), evaluationEnd: Number(r[2]), twapWindow: Number(r[3]),
     rMin: r[4], rMax: r[5], status: r[6], proposalCount: r[7], winnerId: r[8], seedReleased: r[9],
     realisedReturn: r[10], pi: r[11], totalDeposits: r[12], depositsOutstanding: r[13], escrow: r[14], totalPaid: r[15],
     vault: { startValue: v[0], executed: v[5], reported: v[6], cancelled: v[7] },
-    now: await chainNow(),
+    now: Number((await getBlock(blockNumber == null ? {} : { blockNumber })).timestamp),
   };
 }
 

@@ -266,8 +266,8 @@ export async function sendContract({
 }
 
 /** Reads one view function. */
-export function read(address, abi, functionName, args = []) {
-  return publicClient.readContract({ address, abi, functionName, args });
+export function read(address, abi, functionName, args = [], { blockNumber } = {}) {
+  return publicClient.readContract({ address, abi, functionName, args, ...(blockNumber == null ? {} : { blockNumber }) });
 }
 
 export async function nativeBalance(addr) {

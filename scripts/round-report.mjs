@@ -1,19 +1,22 @@
 // npm run round-report -- --round N   Read-only report from on-chain state and events.
-import { abis, cliArgs, loadBook, publicClient, read, txUrl, usdc } from './demo-round-common.mjs';
+import { abis, cliArgs, loadBook, publicClient, read as baseRead, txUrl, usdc } from './demo-round-common.mjs';
 import { STATUS, snapshot } from './lib/round-actions.mjs';
 import { printReconcile, reconcile } from './lib/reconcile.mjs';
 import { testWallets } from './demo-round-common.mjs';
+import { readEvents } from './lib/read-events.mjs';
 import { readAgentsFile } from '../agents/lib/files.mjs';
 
 const args = cliArgs({ round: { type: 'string' } });
 const book = loadBook();
 const A = abis();
-const s = await snapshot(args.round ? BigInt(args.round) : undefined);
+const blockNumber = await publicClient.getBlockNumber();
+const read = (address, abi, fn, args = []) => baseRead(address, abi, fn, args, { blockNumber });
+const s = await snapshot(args.round ? BigInt(args.round) : undefined, { blockNumber });
 if (!s) throw new Error('no such round');
 const QR = book.c.QuantumRound;
 const e18 = (x) => (Number(x) / 1e18).toFixed(4);
 
-console.log(`\nRound ${s.id}: ${STATUS[s.status]}`);
+console.log(`\nRound ${s.id}: ${STATUS[s.status]} (report block ${blockNumber})`);
 console.log(`  trading ${new Date(s.tradingStart * 1000).toISOString()} -> ${new Date(s.tradingEnd * 1000).toISOString()}, TWAP window ${s.twapWindow}s`);
 console.log(`  evaluation ends ${new Date(s.evaluationEnd * 1000).toISOString()}, return bounds ${e18(s.rMin)} .. ${e18(s.rMax)}`);
 console.log(`  deposits ${usdc(s.totalDeposits)} USDC (outstanding ${usdc(s.depositsOutstanding)}), escrow ${usdc(s.escrow)}, paid ${usdc(s.totalPaid)}, seed released: ${s.seedReleased}`);
@@ -30,22 +33,11 @@ console.log(`\nVault: executed ${s.vault.executed}, reported ${s.vault.reported}
 
 console.log('\nEvents');
 const start = BigInt((loadBook().startBlock ?? 0));
-const latest = await publicClient.getBlockNumber();
+const latest = blockNumber;
 const logs = [];
 for (const [name, address, abi] of [['QuantumRound', QR, A.QuantumRound], ['WavefundVault', book.c.WavefundVault, A.WavefundVault]]) {
-  let from = start;
-  let step = 50_000n;
-  while (from <= latest) {
-    const to = from + step > latest ? latest : from + step;
-    try {
-      const got = await publicClient.getContractEvents({ address, abi, fromBlock: from, toBlock: to });
-      logs.push(...got.map((l) => ({ name, l })));
-      from = to + 1n;
-    } catch {
-      step = step > 1000n ? step / 4n : step;
-      if (step <= 1000n && from + step > latest) break;
-    }
-  }
+  const got = await readEvents({ client: publicClient, address, abi, fromBlock: start, toBlock: latest });
+  logs.push(...got.map(l => ({ name, l })));
 }
 const mine = logs.filter(({ l }) => l.args?.roundId === s.id || l.args?.roundId === undefined && ['FlowsProcessed'].includes(l.eventName));
 mine.sort((a, b) => Number(a.l.blockNumber - b.l.blockNumber) || a.l.logIndex - b.l.logIndex);
@@ -58,4 +50,4 @@ const holders = [...new Set([
   ...testWallets().map(w => w.address), ...readAgentsFile().map(a => a.address), book.deployer, book.keeper,
 ].filter(Boolean).map(a => a.toLowerCase()))];
 console.log(`Pending payout holders counted: ${holders.join(', ')}`);
-if (!printReconcile(await reconcile(holders))) process.exitCode = 1;
+if (!printReconcile(await reconcile(holders, { blockNumber }))) process.exitCode = 1;

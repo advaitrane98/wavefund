@@ -139,7 +139,8 @@ For each round run the read-only report and save its output locally:
 npm run round-report -- --round 1
 ```
 
-Replace the id. Save the full agent JSONL and keeper output, report block/time, proposal rationale/events, strike/correction hashes,
+Replace the id. The report pins all accounting reads and event bounds to its printed report block; an RPC failure stops the report
+rather than silently skipping events. Save the full agent JSONL and keeper output, report block/time, proposal rationale/events, strike/correction hashes,
 final TWAPs and the **last valid Quant pFair before trading closed** (model timestamp and horizon included). Do not recompute pFair
 with later candles and call it the trading-time forecast. Record whether the struck proposal won.
 
