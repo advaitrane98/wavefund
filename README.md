@@ -9,7 +9,7 @@ AI agents propose allocations for a shared USDC vault. Forecasters bet on how th
 | **Event** | ETHGlobal Mumbai |
 | **Chain** | Arc testnet (Circle's stablecoin-native L1, USDC as gas) |
 | **Targets** | Arc "Best DeFi / Onchain Finance App Built End to End in Arc Studio"; Uniswap Foundation "Build with Uniswap" |
-| **Status** | Testnet prototype, deployed and exercised end to end (tx hashes in [`contracts/deployments/demo-round.md`](contracts/deployments/demo-round.md)). Vault: [`0x2ba9…799f`](https://explorer.testnet.arc.io/address/0x2ba9271420082d05373282a9c6EFcB416acf799f#code). Resolution is keeper-reported from a keeper-updated ETH/USD feed. |
+| **Status** | Testnet prototype. Current addresses: [`contracts/deployments/current.json`](contracts/deployments/current.json), including vault [`0x9f0D…09a19`](https://explorer.testnet.arc.io/address/0x9f0D3c05AE079A9C19e676096239A817D2709a19). A3 is implemented and checked offline; A4 live rehearsals remain deferred. Evidence record: [`demo-round.md`](demo-round.md). Resolution uses the trusted keeper-updated ETH/USD feed. |
 | **Based on** | [Quantum Markets](https://www.paradigm.xyz/writing/quantum-markets), Alpin Yukseloglu and Sofiane Larbi (Paradigm, June 2025). Implemented from scratch. |
 
 ## Contents
@@ -27,6 +27,7 @@ AI agents propose allocations for a shared USDC vault. Forecasters bet on how th
 11. [Run and test](#run-and-test)
 12. [Tech stack and repo layout](#tech-stack-and-repo-layout)
 13. [Roadmap](#roadmap)
+14. [Demo preparation and known limitations](#demo-preparation-and-known-limitations)
 
 ---
 
@@ -57,11 +58,11 @@ The vault and the decision market hold separate money.
 3. **Deposit and claim.** A forecaster deposits D USDC once and can claim up to D credits in every proposal.
 4. **Trade.** In each market the LONG price reflects the vault's predicted return if that proposal runs.
 5. **Collapse.** The proposal with the highest final-window TWAP wins if it beats the status quo by a margin. All other markets are voided. Bonds are refunded.
-6. **Execute.** The vault swaps to the winning allocation through the USDC/tETH v4 pool. If the status quo wins, the vault does not trade.
-7. **Evaluate.** After the horizon, the vault return is measured from a fresh oracle price.
-8. **Settle.** The winning market pays out on the return. Seed returns to the reserve.
+6. **Execute.** The vault swaps to the winning allocation through the USDC/tETH v4 pool. If the status quo wins, there is no allocation rebalance; processing queued withdrawals can still require a liquidity sale.
+7. **Evaluate.** After the horizon, the vault return uses the first oracle observation at or after evaluation end.
+8. **Settle.** The winning market pays out on the return. The winning seed is released after user liabilities clear.
 
-A forecaster who never trades the winning market ends with exactly their deposit.
+A forecaster who never trades the winning market receives their deposit back, before transaction gas.
 
 ---
 
@@ -87,16 +88,16 @@ LONG pays $\pi$, SHORT pays $1-\pi$, unspent credits pay 1.
 **Selection.** A LONG price implies $\mathbb{E}[R \mid i] \approx R_{\min} + p_i (R_{\max}-R_{\min})$. With $\overline{p}_i$ the TWAP over the final window $[T_d-\Delta, T_d]$ and proposal 0 the status quo:
 
 $$
-w = \arg\max_i \overline{p}_i \quad \text{s.t.} \quad \overline{p}_w \ge \overline{p}_0 + \varepsilon
+w = \arg\max_i \overline{p}_i \quad \text{s.t.} \quad \overline{p}_w > \overline{p}_0 + \varepsilon
 $$
 
 $\varepsilon$ defaults to 0.005 (0.5 percentage points). If nothing clears it, proposal 0 wins and the vault holds.
 
-**Solvency.** Total payout of market $w$ equals total credits claimed in $w$, so $\sum_u(D_u - c_{u,w} + \text{payout}_{u,w}) \le \sum_u D_u$. Losing markets pay and take nothing. Fuzz-tested.
+**Solvency.** Round payouts are bounded by deposits plus the winning protocol seed. A user receives the unclaimed portion of their deposit plus their winning CREDIT/LONG/SHORT payout; losing branches have no payout. The reserve absorbs the seeded position's gains/losses and is released only after liabilities clear. Contract tests cover these accounting rules.
 
-**PnL.** $\text{PnL}_u = \text{payout}_{u,w} - c_{u,w}$. Trades in losing proposals have no effect.
+**Trading PnL before gas.** $\text{PnL}_u = \text{payout}_{u,w} - c_{u,w}$. Trades in losing proposals have no settlement effect.
 
-**Manipulation cost.** Moving a pool's LONG price from $p_a$ to $p_b$ costs $\Delta y = L(\sqrt{p_b}-\sqrt{p_a})$ credits, linear in liquidity $L$.
+**Manipulation cost.** Use the adapter's `quoteBuy*` / `quoteSell*` views. Probability is `P/(1+P)` for the SHORT-per-LONG pool price `P`; trade cost also depends on concentrated liquidity, fees and tick crossings. A square-root formula in probability is not an execution quote.
 
 **Worked example.** Range $[0.95, 1.05]$. Proposal 1 (30% tETH) wins at TWAP 0.560 vs status quo 0.500. tETH rises 2%, so $R = 1 + 0.3 \times 0.02 = 1.006$ and $\pi = 0.56$. Alice deposited 1,000, bought 500 LONG for 265 credits (avg 0.53), and is paid $500 \times 0.56 = 280$ plus 735 unspent credits = 1,015. PnL = +15 USDC.
 
@@ -107,26 +108,26 @@ $\varepsilon$ defaults to 0.005 (0.5 percentage points). If nothing clears it, p
 What the paper leaves open, and what we chose:
 
 1. **Final-window TWAP, not a running maximum.** A short spike can lock in a "best" price forever. The window defaults to 50% of the trading window (min 300 s). A distortion flips the outcome only if distortion × duration exceeds margin × window.
-2. **A metric participants can't push.** The metric is the vault return marked at an external ETH/USD price, not a token the traders can move.
+2. **Externally marked metric.** The vault return uses the keeper-updated ETH/USD feed rather than the proposal market's own token price. The keeper and oracle remain trusted.
 3. **Protocol-owned liquidity.** One reserve seeds every proposal pool. Losing markets unwind to the reserve at collapse. The reserve absorbs seeded-position gains and losses after forecaster liabilities.
 4. **Status quo plus margin.** Proposal 0 and $\varepsilon$ mean the vault acts only on expected improvement.
-5. **Oracle-marked resolution.** The keeper updates a price adapter (Coinbase spot) and reports the return via the vault and `Resolver`. A Chainlink CRE receiver is deployed against the Arc Testnet simulation forwarder; the production workflow is not live.
+5. **Oracle-marked resolution.** The keeper updates a price adapter (Coinbase spot) and reports the return via the vault and `Resolver`. Chainlink CRE integration remains a roadmap item; no CRE receiver is listed in the current deployment book.
 
 ---
 
 ## Agents
 
-Five agents run from `agents/`, each with its own Circle developer-controlled wallet. They have transacted in live rounds (6, 7 and 10; see [`demo-round.md`](contracts/deployments/demo-round.md)). Dry-run is the default; `--execute` submits real transactions under per-trade, per-round and daily gas caps.
+Five agents are implemented in `agents/`, each using its own Circle developer-controlled wallet. The previous README referenced historical rounds 6, 7 and 10; their record is not present in this checkout and they are not A4 evidence for the current deployment. Current rehearsal records belong in [`demo-round.md`](demo-round.md). Dry-run is the default; `--execute` submits real transactions under trade and gas caps. See [`agents/README.md`](agents/README.md) for the Quant/Guardian model, independent loops and tests.
 
 | Agent | Role | Decision input | Stake |
 |---|---|---|---|
-| **Momentum** | Proposer | Price momentum over recent hours | 1 USDC bond |
+| **Momentum** | Proposer | Momentum from 30 contiguous one-minute closes | 1 USDC bond |
 | **Mean-reversion** | Proposer | Distance from moving average, volatility | 1 USDC bond |
 | **News** | Proposer | RSS headlines, Claude JSON decision with deterministic fallback (logged on-chain as `claude` or `fallback`) | 1 USDC bond |
 | **Quant** | Forecaster | Expected return per allocation from price and volatility; sizes trades from adapter `quote*` views (0.5% slippage) | 2 USDC deposit |
 | **Guardian** | Forecaster | Watches probabilities for manipulation; checks every 5 s in the final TWAP window | 2 USDC deposit |
 
-`npm run agents:setup` provisions five unfunded Arc Testnet EOAs via Circle and writes public addresses to `agents/agents.json`. Proposers register in `ProposerRegistry` and shift an allocation by at least 500 bps if it would duplicate another proposal. The Agents page reads on-chain stats (proposals made, rounds won, average winning return, forecasting PnL, Guardian interventions) from registry and round events.
+`npm run agents:setup` provisions five unfunded Arc Testnet EOAs via Circle and writes public addresses to `agents/agents.json`. Proposers register in `ProposerRegistry` and shift an allocation by at least 500 bps if it would duplicate another proposal. The Agents page reads proposer and forecaster statistics from on-chain events. Detailed Guardian intervention timing is recorded in agent JSONL logs; it is not a separately attested frontend metric.
 
 ---
 
@@ -182,7 +183,7 @@ flowchart TB
     QR --> REG
 ```
 
-A diagram of the same architecture and round flow is in [`docs/wavefund-architecture.excalidraw`](docs/wavefund-architecture.excalidraw).
+The diagrams here describe the current roles; the address book is [`contracts/deployments/current.json`](contracts/deployments/current.json).
 
 ```mermaid
 sequenceDiagram
@@ -217,7 +218,7 @@ Rounds run sequentially. Vault deposits and withdrawals queue and take effect on
 
 ## Smart contracts
 
-Written from scratch; addresses in [`contracts/deployments/current.json`](contracts/deployments/current.json), all verified on the Arc explorer.
+Contract sources are in `contracts/src`; addresses are recorded in [`contracts/deployments/current.json`](contracts/deployments/current.json). Run `npm run check:contracts` to check the configured deployment; this change does not claim a new deployment or live verification.
 
 | Contract | Responsibility |
 |---|---|
@@ -232,54 +233,55 @@ Written from scratch; addresses in [`contracts/deployments/current.json`](contra
 
 ```solidity
 // QuantumRound
-openRound(uint64 tradingEnd, uint64 horizon, uint96 rMin, uint96 rMax, uint32 twapWindow)
-propose(uint256 roundId, Allocation target, string rationaleURI)
+openRound(uint256 tradingEnd, uint256 horizon, uint256 rMin, uint256 rMax, uint256 twapWindow)
+propose(uint256 roundId, Allocation allocation, string rationale)
 deposit(uint256 roundId, uint256 amount)
 claimCredits(uint256 roundId, uint256 proposalId, uint256 amount)   // capped at the deposit, per proposal
 buyLong / buyShort(roundId, proposalId, creditsIn, minOut)
 sellLong / sellShort(roundId, proposalId, amountIn, minCreditsOut)
 collapse(uint256 roundId)                          // after tradingEnd, anyone
-settle(uint256 roundId, int256 realisedReturn)     // via vault / Resolver
+settle(uint256 roundId, uint256 realisedReturn)     // via vault / Resolver
 releaseSeed(uint256 roundId)                       // anyone, once no user liabilities remain
 redeem(uint256 roundId)
 
 // WaveV4ProposalMarket
 quoteBuyLong / quoteBuyShort / quoteSellLong / quoteSellShort(...) view
 probabilities(roundId, proposalId) view returns (pLong, pShort)
-probabilityTwap(roundId, proposalId, ...) view
+probabilityTwap(roundId, proposalId) view
 
 // WavefundVault
 requestDeposit(uint256 amount)
 requestWithdraw(uint256 shares)
-executeTrade(uint256 roundId, uint16 winnerTEthBps)   // no swap if the winner is the status quo
+executeTrade(uint256 roundId, uint256 winnerTEthBps)  // no allocation rebalance for status quo
 reportReturn(uint256 roundId)
-navPerShare() view
+sharePriceUsdc() view
 ```
 
-**Invariants.** (1) Round payouts never exceed deposits plus the winning seed. (2) Per-proposal claims never exceed the deposit. (3) Losing proposals pay and lock nothing. (4) A pool cannot trade before open or after collapse. (5) Only the winning allocation executes, once per round; a status-quo winner never trades. (6) Vault flows apply only at decision boundaries.
+**Invariants.** (1) Round payouts never exceed deposits plus the winning seed. (2) Per-proposal claims never exceed the deposit. (3) Losing proposals pay and lock nothing. (4) A pool cannot trade before open or after collapse. (5) Only the winning allocation executes, once per round; a status-quo winner skips allocation rebalancing (withdrawal funding can still swap). (6) Vault flows apply only at decision boundaries.
 
 ---
 
 ## Uniswap v4 integration
 
-Uniswap v4 does three jobs: every proposal market is a v4 pool governed by `WaveHook`; the winning trade executes through a v4 pool; one protocol reserve seeds all pools. Links are pinned to commit `cdb417a`.
+Uniswap v4 supports proposal LONG/SHORT pools with `WaveHook`, the vault's USDC/tETH execution pool, and protocol-owned seed liquidity. Links below point to this repository's current source.
 
 | What | Where |
 |---|---|
-| Hook permissions (before/after swap, before add/remove liquidity) | [`WaveHook.sol` L81–98](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveHook.sol#L81) |
-| Pool registration (round, proposal, LONG token, windows; fee and tick spacing) | [`WaveHook.sol` L100–135](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveHook.sol#L100) |
-| Swap and liquidity gating | [`_beforeAddLiquidity` L192](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveHook.sol#L192), [`_beforeRemoveLiquidity` L209](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveHook.sol#L209), [`_beforeSwap` L226](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveHook.sol#L226) |
-| Final-window TWAP (integrals updated in `afterSwap`) | [`_afterSwap` L238–258](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveHook.sol#L238), [`finalWindowTwap` L170](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveHook.sol#L170) |
-| Hook address mining (CREATE2 via `HookMiner`) | [`DeployWaveHook.s.sol`](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/script/DeployWaveHook.s.sol) |
-| Pool creation and seeding (`initialize`, single-range `modifyLiquidity`) | [`seedLiquidity` L441–480](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L441) |
-| Trades (`unlock` → `swap`/`modifyLiquidity` → `sync`/`settle`/`take`) | [`unlockCallback` L533](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L533), [`_settleOrTake` L618](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L618) |
-| Complete-set buys and sells | [`tradeBuyLong` L152](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L152), [`_tradeSell` L249](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L249) |
-| Exact quotes (replays `SwapMath`) | [`quoteBuyLong` L214](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L214), [`_simulate` L344](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L344) |
-| Unwinding losing markets | [`finalizeProposal` L510](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WaveV4ProposalMarket.sol#L510) |
-| The vault's trade (oracle-relative slippage cap) | [`executeTrade` L444](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WavefundVault.sol#L444), [`performTrade` L504](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WavefundVault.sol#L504), [`unlockCallback` L625](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/src/WavefundVault.sol#L625) |
-| Pool management (−10% / +20% position) | [`pool-recenter.mjs`](https://github.com/CodeBlocker52/conviction/blob/cdb417abd87ae4bfb8483c8b7212e78ce6a4ec37/conviction/contracts/script/pool-recenter.mjs) |
+| Hook permissions | [`getHookPermissions`](contracts/src/WaveHook.sol#L91) |
+| Pool registration | [`registerPool`](contracts/src/WaveHook.sol#L101) |
+| Swap gating | [`_beforeSwap`](contracts/src/WaveHook.sol#L223) |
+| Final-window observations | [`_afterSwap`](contracts/src/WaveHook.sol#L240) |
+| Projected probability TWAP | [`finalWindowTwap`](contracts/src/WaveHook.sol#L176) |
+| Pool creation and seeding | [`seedLiquidity`](contracts/src/WaveV4ProposalMarket.sol#L208) |
+| Swap callbacks | [`unlockCallback`](contracts/src/WaveV4ProposalMarket.sol#L383) |
+| Exact adapter quotes | [`quoteBuyLong`](contracts/src/WaveV4ProposalMarket.sol#L315) |
+| Quote swap replay | [`_simulate`](contracts/src/WaveV4ProposalMarket.sol#L533) |
+| Unwinding proposal markets | [`finalizeProposal`](contracts/src/WaveV4ProposalMarket.sol#L289) |
+| Vault execution | [`executeTrade`](contracts/src/WavefundVault.sol#L398) |
+| Hook address mining | [`DeployWaveHook.s.sol`](contracts/script/DeployWaveHook.s.sol) |
+| Pool management | [`pool-recenter.mjs`](scripts/pool-recenter.mjs) |
 
-Developer feedback on v4 and Arc: [`FEEDBACK.md`](FEEDBACK.md).
+The prior README linked an older Conviction source tree and a `FEEDBACK.md` file that is not included here. Use the Wavefund links above for this implementation.
 
 ---
 
@@ -292,9 +294,9 @@ Developer feedback on v4 and Arc: [`FEEDBACK.md`](FEEDBACK.md).
 | No wrapped native token | Pools pair directly against ERC-20 USDC; no WUSDC |
 | `address(0)` sends and blocklisted transfers revert | No burns to zero address; transfer paths handle reverts |
 | `PREVRANDAO` returns 0 | No on-chain randomness |
-| Sub-second finality | Collapse and execution can land in consecutive blocks |
+| Confirmed transaction sequence | Keeper confirms collapse before submitting vault execution |
 
-Forge simulation does not support Arc's blocklist precompile, so USDC-moving operations run as viem scripts against the RPC. External Arc addresses are in `contracts/deployments/SOURCES.md`.
+Forge simulation does not support Arc's blocklist precompile, so USDC-moving operations run as viem scripts against the RPC. External Arc addresses are documented in [`AGENTS.md`](AGENTS.md) and [`contracts/deployments/current.json`](contracts/deployments/current.json).
 
 ---
 
@@ -327,17 +329,20 @@ is claimed by this change.** Quant/Guardian implementation and offline checks ar
 ## Run and test
 
 ```bash
-npm install
-npm run dev               # http://localhost:3000
-npm run build             # Next.js production build
-npm run build:checked     # check:contracts, then build
-npm run check:contracts   # code at every address, ABI selectors, roles, wiring
-npm run e2e:live          # Playwright against production (or E2E_URL=...)
-npm run test:agents       # agent scheduling, signer safety, risk model
-forge test                # 218 tests (needs ~/.foundry/bin on PATH)
+npm install --ignore-scripts
+npm run agents:test
+npm run ops:test
+npm run agents:mutation
+npm --prefix frontend install --ignore-scripts
+npm --prefix frontend run dev          # http://localhost:3000
+npm --prefix frontend run build
+npm --prefix frontend run typecheck
+npm run check:contracts                # live deployment reads; run when live checks resume
+npm --prefix frontend run e2e:live     # live browser checks; deferred
+forge test --root contracts            # requires Foundry and initialized submodules
 ```
 
-`.env` (never committed): `DEPLOYER_PK`, `DEPLOYER_ADDR`, `KEEPER_PK`, `KEEPER_ADDR`, `ARC_RPC_URL`, `BLOCKSCOUT_API_KEY`, and for agent wallets `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`. Frontend RPC override: `NEXT_PUBLIC_ARC_RPC_URL`.
+`.env` (never committed): `DEPLOYER_PK`, `DEPLOYER_ADDR`, `KEEPER_PK`, `KEEPER_ADDR`, `ARC_TESTNET_RPC`, `BLOCKSCOUT_API_KEY`, and for agent wallets `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`. Frontend RPC override: `NEXT_PUBLIC_ARC_RPC_URL`.
 
 **Frontend.** `/` landing; `/demo` has Markets, Vault, Portfolio, Agents, How it works. The **Use on-chain data** toggle switches from the simulated workspace (mock mode, state in local storage) to live mode (plain viem, multicall, 30 s polling, writes via `window.ethereum`). No wagmi.
 
@@ -345,12 +350,12 @@ forge test                # 218 tests (needs ~/.foundry/bin on PATH)
 
 | Command | Does |
 |---|---|
-| `npm run pool:recenter [-- --execute]` | Re-centres the USDC/tETH pool on the oracle price and re-adds the −10% / +20% position |
+| `npm run pool:recenter [-- --max-new-usdc 1]` | Re-centres the USDC/tETH pool on the oracle price and re-adds the −10% / +20% position |
 | `npm run agents:setup` | Creates a Circle wallet set and five unfunded `ARC-TESTNET` EOAs |
 | `npm run agents:run -- --dry-run --poll 10` | Computes proposal decisions without signing; `--execute` submits |
-| `npm run demo:open-round -- --minutes 30 --execute` | Checks pool depth and seed, opens a round with candle-derived bounds |
+| `npm run demo:open-round -- --preset full` | Checks pool depth and seed, opens a round with candle-derived bounds |
 | `npm run keeper:run [-- --preset judge\|full]` | Collapses at trading end, runs the vault trade, reports and settles at evaluation end, optionally opens the next round. `full`: 20 min trading, 600 s TWAP, 600 s evaluation. `judge`: 8 min, 240 s, 120 s |
-| `npm run demo:close-round -- --execute` | Manual collapse, trade, settle |
+| `npm run demo:close-round` | Manual collapse, trade, settle |
 | `npm run oracle:update` / `oracle:start` / `oracle:stop` | Push the Coinbase price once, or run the 60 s watcher |
 
 **Live-mode check.** Run `pool:recenter`, `demo:open-round`, `keeper:run`; open `/demo` in live mode on Arc Testnet (chain `5042002`); deposit 1 USDC, claim 1 credit in every proposal, buy LONG on one and SHORT on another; wait for collapse and settlement; redeem and confirm `payout = deposit − claimed[winner] + winner credits + LONG × π + SHORT × (1 − π)`.
@@ -359,12 +364,12 @@ forge test                # 218 tests (needs ~/.foundry/bin on PATH)
 
 | Layer | Proves | Tool |
 |---|---|---|
-| Unit | Per-proposal claims, complete sets, payout formula, bonds, seed release, status-quo-no-trade | `forge test` |
-| Fuzz and invariants | Payouts within deposits plus seed; quotes equal execution; buy/sell round trips never profit | Foundry |
+| Unit | Per-proposal claims, complete sets, payout formula, bonds, seed release, status-quo allocation behavior | `forge test --root contracts` |
+| Fuzz and invariants | Contract accounting and quote/execution properties exercised by the contract suite | Foundry (not rerun for the agent-only change) |
 | Hook | Swaps and liquidity blocked outside window and bounds; TWAP correct across swaps | Foundry, local PoolManager |
-| On-chain smoke | Full rounds on Arc through the keeper, exact redeem reconciliation | `smoke-v2.mjs`, `demo-round.md` |
+| On-chain smoke | Full rounds on Arc through the keeper, exact redeem reconciliation | `scripts/smoke-round.mjs`, [`demo-round.md`](demo-round.md) (live evidence pending) |
 | Deployment | Code at every address, selectors, roles, wiring | `npm run check:contracts` |
-| Live site | No console, rate-limit or error banners in live and mock mode | `npm run e2e:live` |
+| Live site | Browser smoke checks of live and mock mode (deferred) | `npm --prefix frontend run e2e:live` |
 
 ---
 
@@ -378,20 +383,22 @@ forge test                # 218 tests (needs ~/.foundry/bin on PATH)
 | Oracle | `MockPriceOracle`, keeper-updated from Coinbase public spot API |
 | Keeper and scripts | Node.js, viem |
 | Agents | Node.js, Circle developer-controlled wallets, Claude (News proposer) |
-| App | Next.js 15 App Router, React 18, plain viem, Vercel |
+| App | Next.js 15 App Router, React 19 (manifest ranges), plain viem |
 | Verification | Blockscout and Sourcify |
 
 ```
-conviction/
-├── app/            # Next.js app: demo routes, hooks (useQuantumRound, useWallet), lib (contracts, rpc, ABIs)
-├── agents/         # five agents, agents.json
+wavefund/
+├── frontend/       # Next.js app, live/mock modes, ABIs, public deployment config
+├── agents/         # five-agent runtime, model, quote sizing, tests, agents.json
 ├── contracts/
 │   ├── src/        # Solidity
 │   ├── test/       # Foundry unit, fuzz, invariant tests
-│   ├── script/     # Forge deploy scripts (*.s.sol) and Node operator scripts (*.mjs)
-│   └── deployments/  # current.json, SOURCES.md, demo-round.md, smoke logs
-├── scripts/        # e2e-live.mjs (Playwright)
-├── FEEDBACK.md     # Uniswap developer feedback
+│   ├── script/     # Forge deployment scripts
+│   └── deployments/ # current.json, previous deployment, ABIs
+├── scripts/        # Node operator scripts and offline operator tests
+├── docs/           # contract API, security review, task prompts
+├── DEMO.md         # approved future live-run procedure
+├── demo-round.md   # attempted-round records; live results pending
 └── README.md
 ```
 
@@ -411,7 +418,7 @@ Not implemented; not part of the live protocol.
 - Price-based bond slashing, once a manipulation-resistant signal exists (today a rival could push a price down cheaply because losing markets are erased).
 
 **Vault and operations**
-- Fix withdrawal liquidity: gross up for the 0.3% pool fee when selling tETH to cover a queued withdrawal.
+- Improve withdrawal fee attribution and liquidity sourcing. The current ordinary path raises an exact USDC shortfall; its liquidation cost falls on the vault, while near-total exits can share a haircut (see known limitations).
 - Automate pool re-centring and move the position off the deployer.
 - Production cadence: daily or weekly rounds.
 
