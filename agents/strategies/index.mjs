@@ -1,40 +1,10 @@
-// Baseline decision rules. They are deliberately simple and fully explained in `reasoning`; swap them for richer
-// models later without touching the runtime (signers, caps, scheduler and logging do not depend on them).
-//
-// Proposers:   decideProposal({ agent, features, statusQuoBps, round }) -> { action, tEthBps?, rationale?, reasoning }
-// Forecasters: decideTrade({ agent, features, round, proposals: [{ id, tEthBps, pLong }], statusQuoBps })
-//                -> { action, proposalId?, long?, credits?, reasoning }
+// Baseline forecaster rules. They are deliberately simple and fully explained in `reasoning`; swap them for richer
+// models later without touching the runtime. Proposer strategies live in agents/proposer-strategies.mjs.
+//   forecasters.decide({ agent, features, round, proposals: [{ id, tEthBps, pLong }], statusQuoBps })
+//     -> { action, proposalId?, long?, credits?, reasoning }
 import { MAX_TRADE_CREDITS } from '../lib/config.mjs';
 
-const clampBps = (x) => Math.max(0, Math.min(10_000, Math.round(x)));
-const STEP_BPS = 2000; // proposers move the ETH share by 20 percentage points
 const MIN_EDGE = 0.05; // forecasters need a 5 point probability edge to trade
-
-function proposal(statusQuoBps, deltaBps, why, rationale) {
-  const tEthBps = clampBps(statusQuoBps + deltaBps);
-  if (Math.abs(tEthBps - statusQuoBps) < 500) {
-    return { action: 'skip', reasoning: `${why}; the resulting allocation ${tEthBps} bps is within 500 bps of the status quo ${statusQuoBps}, so it would not change the outcome` };
-  }
-  return { action: 'propose', tEthBps, rationale, reasoning: `${why}; moving from ${statusQuoBps} to ${tEthBps} bps` };
-}
-
-export const proposers = {
-  momentum({ features: f, statusQuoBps }) {
-    if (f.ret15 > 0.0005) return proposal(statusQuoBps, STEP_BPS, `15-minute return ${(f.ret15 * 100).toFixed(3)}% is positive (trend up)`, 'Momentum: trend is up, take more ETH exposure.');
-    if (f.ret15 < -0.0005) return proposal(statusQuoBps, -STEP_BPS, `15-minute return ${(f.ret15 * 100).toFixed(3)}% is negative (trend down)`, 'Momentum: trend is down, cut ETH exposure.');
-    return { action: 'skip', reasoning: `15-minute return ${(f.ret15 * 100).toFixed(3)}% is inside the +/-0.05% dead zone, no trend to follow` };
-  },
-  mean_reversion({ features: f, statusQuoBps }) {
-    if (f.z > 1.5) return proposal(statusQuoBps, -STEP_BPS, `price is ${f.z.toFixed(2)} standard deviations above its 30-minute mean`, 'Mean reversion: price is stretched up, expect a pullback.');
-    if (f.z < -1.5) return proposal(statusQuoBps, STEP_BPS, `price is ${f.z.toFixed(2)} standard deviations below its 30-minute mean`, 'Mean reversion: price is stretched down, expect a bounce.');
-    return { action: 'skip', reasoning: `z-score ${f.z.toFixed(2)} is inside +/-1.5, price is not stretched` };
-  },
-  news({ features: f, statusQuoBps }) {
-    if (f.shock < 3) return { action: 'skip', reasoning: `5-minute move is ${f.shock.toFixed(2)} sigma, below the 3 sigma shock threshold (volatility-shock proxy; no news feed connected yet)` };
-    const up = f.ret5 > 0;
-    return proposal(statusQuoBps, up ? STEP_BPS : -STEP_BPS, `5-minute move of ${(f.ret5 * 100).toFixed(3)}% is a ${f.shock.toFixed(1)} sigma shock`, `Shock ${up ? 'up' : 'down'}: follow the move until the market reprices.`);
-  },
-};
 
 /** Fair pLong of a proposal: expected vault return 1 + w * mu, mapped linearly onto [rMin, rMax]. */
 export function fairPLong({ w, mu, rMin, rMax }) {

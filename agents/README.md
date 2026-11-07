@@ -10,7 +10,7 @@ through their own Circle developer-controlled wallets on ARC-TESTNET. Agents nev
 | `npm run agents:run` | Default `--dry-run`: logs decisions and transaction plans, sends nothing. `--execute` sends real transactions. `--once` runs a single pass. `--preset judge` raises the daily gas cap to 3.0 USDC. |
 | `npm run agents:test` | Unit tests (signers, caps, scheduler, logging redaction, setup, executor). |
 
-Environment (names only): `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`, `AGENT_CIRCLE_WALLET_SET_ID`,
+Environment (names only): `ANTHROPIC_API_KEY` (News proposer; optional `ANTHROPIC_MODEL`, default `claude-haiku-5-5`), `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`, `AGENT_CIRCLE_WALLET_SET_ID`,
 `AGENT_<NAME>_CIRCLE_WALLET_ID`, `DEPLOYER_PK` or `AGENT_FUNDER_PK` (funding only), `ARC_TESTNET_RPC`.
 Local keys (tests and rehearsal only) need `AGENTS_SIGNER=local`, `AGENTS_ALLOW_LOCAL_KEYS=yes` and `AGENT_<NAME>_PK`.
 
@@ -18,4 +18,9 @@ Safety: gas caps of 0.25 USDC per round and 1.0 USDC per UTC day per agent, a 0.
 proposal, a single-instance lock (`.run/agents/agents.lock`), and Ctrl+C finishes the current step before exiting.
 Logs are JSONL per UTC day in `.run/agents/logs/`, with secrets redacted. The spend ledger is `.run/agents/ledger.json`.
 
-The decision rules in `agents/strategies/index.mjs` are simple baselines. The runtime does not depend on them.
+Proposers (`agents/proposer-strategies.mjs`): Momentum and Mean-reversion use 30 contiguous 1-minute closes; News reads CoinDesk
+headlines and asks Claude for strict JSON, with a keyword fallback ("fallback used" appears in the rationale). A diversity step keeps
+every proposal 500+ bps from the status quo and from each other. For a dry-run without an open round use
+`--simulate-round judge --simulate-status-quo 5000` (dry-run only).
+
+The forecaster rules in `agents/strategies/index.mjs` are simple baselines. The runtime does not depend on them.

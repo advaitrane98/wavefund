@@ -21,7 +21,9 @@ import {
   dueTick, forecasterTicks, phaseOf, proposerWindow, secondsUntilNext, tradeCutoff,
 } from './lib/scheduler.mjs';
 import { createSigner, signerBackend } from './lib/signers/index.mjs';
-import { forecasters, proposers } from './strategies/index.mjs';
+import { forecasters } from './strategies/index.mjs';
+import { decideProposal } from './proposer-strategies.mjs';
+import { fetchHeadlines } from './lib/news.mjs';
 
 const MAX_ATTEMPTS = 3;
 
@@ -38,12 +40,13 @@ function syntheticRound(preset, now) {
 export async function runAgents(argv = process.argv.slice(2)) {
   const args = cliArgs({
     'dry-run': { type: 'boolean', default: false }, execute: { type: 'boolean', default: false }, once: { type: 'boolean', default: false },
-    preset: { type: 'string', default: 'full' }, only: { type: 'string' }, 'simulate-round': { type: 'string' }, poll: { type: 'string', default: '5' },
+    preset: { type: 'string', default: 'full' }, only: { type: 'string' }, 'simulate-round': { type: 'string' }, 'simulate-status-quo': { type: 'string' }, poll: { type: 'string', default: '5' },
   }, argv);
   if (args['dry-run'] && args.execute) throw new Error('Use either --dry-run (default) or --execute, not both.');
   const execute = args.execute;
   if (!PRESETS[args.preset]) throw new Error(`unknown --preset "${args.preset}" (use full or judge)`);
-  if (args['simulate-round'] && execute) throw new Error('--simulate-round is dry-run only.');
+  if ((args['simulate-round'] || args['simulate-status-quo']) && execute) throw new Error('--simulate-round and --simulate-status-quo are dry-run only.');
+  if (args['simulate-status-quo'] && !args['simulate-round']) throw new Error('--simulate-status-quo needs --simulate-round.');
   const pollMs = Math.max(1, Number(args.poll)) * 1000;
 
   const logger = createLogger({ dir: path.join(AGENTS_RUN_DIR, 'logs') });
@@ -95,6 +98,12 @@ export async function runAgents(argv = process.argv.slice(2)) {
     });
 
     let lastIdleLog = 0;
+    const cycle = new Map(); // round -> allocations chosen so far this cycle (kept in memory, also in dry-run)
+    let newsCache = null;
+    async function headlinesNow() {
+      if (!newsCache || Date.now() - newsCache.at > 300_000) newsCache = { at: Date.now(), ...(await fetchHeadlines()) };
+      return newsCache;
+    }
     const logWait = (agent, payload) => { if (args.once) logger.decision(agent, payload); };
 
     async function pass() {
@@ -111,7 +120,7 @@ export async function runAgents(argv = process.argv.slice(2)) {
       const roundKey = snap.id.toString();
       const book = loadBook();
       const statusQuoBps = snap.simulated
-        ? Number(await read(book.c.WavefundVault, abis().WavefundVault, 'currentTEthBps'))
+        ? (args['simulate-status-quo'] != null ? Number(args['simulate-status-quo']) : Number(await read(book.c.WavefundVault, abis().WavefundVault, 'currentTEthBps')))
         : (await proposalInfo(snap.id, 0)).tEthBps;
       const data = await market.candles();
       const f = computeFeatures(data.closes);
@@ -131,12 +140,24 @@ export async function runAgents(argv = process.argv.slice(2)) {
           const win = proposerWindow(timing, def);
           if (now < win.opensAt) { nextWait = Math.min(nextWait, (win.opensAt - now) * 1000); logWait(def.key, { inputs, action: 'wait', reasoning: `proposal window opens in ${win.opensAt - now}s` }); continue; }
           if (now > win.closesAt || !win.valid) { fired.mark(firedKey); logger.decision(def.key, { inputs, action: 'skip', reasoning: 'proposal window already closed' }); continue; }
-          const d = proposers[def.key]({ agent: def, features: f, statusQuoBps, round: snap });
-          logger.decision(def.key, { inputs, action: d.action, reasoning: d.reasoning, tEthBps: d.tEthBps, rationale: d.rationale });
+          const onChain = [];
+          for (let p = 1; p < Number(snap.proposalCount); p++) onChain.push((await proposalInfo(snap.id, p)).tEthBps);
+          const chosen = cycle.get(roundKey) ?? [];
+          const news = def.key === 'news' ? await headlinesNow() : { headlines: [] };
+          const d = await decideProposal({ def, candles: data.candles, statusQuoBps, others: [...onChain, ...chosen], headlines: news.headlines, env: process.env });
+          const reasoning = d.action === 'propose'
+            ? `${d.source}: raw ${d.rawBps} bps (z ${d.z?.toFixed(2)}), ${d.shifted ? `shifted to ${d.finalBps} bps (${d.shiftSide})` : 'no shift needed'}; ${d.why}`
+            : `skip: ${d.skipReason}`;
+          logger.decision(def.key, {
+            inputs: { ...inputs, existingProposalsBps: onChain, chosenThisCycleBps: chosen, headlines: news.headlines?.map((h) => h.title), newsError: news.error },
+            action: d.action, reasoning, source: d.source, rawBps: d.rawBps, finalBps: d.finalBps, shifted: d.shifted, shiftSide: d.shiftSide,
+            tEthBps: d.finalBps, rationale: d.rationale, signal: d.signal,
+          });
           if (d.action !== 'propose') { fired.mark(firedKey); continue; }
           try {
-            const steps = proposeSteps({ agentDef: def, state, roundId: snap.id, tEthBps: d.tEthBps, rationale: d.rationale });
+            const steps = proposeSteps({ agentDef: def, state, roundId: snap.id, tEthBps: d.finalBps, rationale: d.rationale });
             for (const s of steps) await a.executor.run(s, { roundId: roundKey });
+            cycle.set(roundKey, [...chosen, d.finalBps]);
             fired.mark(firedKey);
           } catch (err) {
             handleFailure(a, firedKey, err);

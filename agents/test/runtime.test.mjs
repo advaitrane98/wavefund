@@ -10,7 +10,7 @@ import { createLogger } from '../lib/logger.mjs';
 import { createMarketData, features } from '../lib/market-data.mjs';
 import { buildPlan, purposeOf } from '../fund.mjs';
 import { AGENT_DEFS } from '../lib/config.mjs';
-import { proposers, forecasters, fairPLong } from '../strategies/index.mjs';
+import { forecasters, fairPLong } from '../strategies/index.mjs';
 import { clock, noSleep, readJsonl, tmpDir } from './helpers.mjs';
 
 const ADDR = '0x1111111111111111111111111111111111111111';
@@ -181,17 +181,6 @@ test('funding plan: proposers 1 USDC bond + gas, forecasters 2 USDC deposit + ga
 
 // ---- strategies
 const f0 = { last: 2000, ret5: 0, ret15: 0, ret30: 0, sigma: 0.0005, z: 0, shock: 0 };
-test('proposers explain themselves and skip when there is no signal', () => {
-  assert.equal(proposers.momentum({ features: f0, statusQuoBps: 5000 }).action, 'skip');
-  const up = proposers.momentum({ features: { ...f0, ret15: 0.002 }, statusQuoBps: 5000 });
-  assert.equal(up.action, 'propose');
-  assert.equal(up.tEthBps, 7000);
-  assert.match(up.reasoning, /trend up/);
-  assert.equal(proposers.mean_reversion({ features: { ...f0, z: 2 }, statusQuoBps: 5000 }).tEthBps, 3000);
-  assert.equal(proposers.news({ features: f0, statusQuoBps: 5000 }).action, 'skip');
-  assert.equal(proposers.momentum({ features: { ...f0, ret15: 0.002 }, statusQuoBps: 9900 }).action, 'skip', 'no point proposing a near-identical allocation');
-});
-
 test('forecasters trade only on a real edge, and sizes respect the per-trade cap', () => {
   const round = { rMin: 990_000_000_000_000_000n, rMax: 1_010_000_000_000_000_000n, tradingEnd: 1000, evaluationEnd: 1600 };
   const none = forecasters.decide({ agent: { key: 'quant' }, features: f0, round, proposals: [{ id: 1, tEthBps: 7000, pLong: 0.5 }], statusQuoBps: 5000 });
