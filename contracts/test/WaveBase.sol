@@ -63,6 +63,12 @@ abstract contract WaveBase is Test {
         adapter.setWaveHook(address(hook));
     }
 
+    /// @dev A round controller whose `market()` getter returns `a` (what setQuantumRound now requires).
+    function _roundFor(WaveV4ProposalMarket a) internal returns (MockQuantumRound r) {
+        r = new MockQuantumRound(tokens);
+        r.setMarket(a);
+    }
+
     /// @dev An address whose low 14 bits are exactly 2752, distinguished by `tag` in the high bits.
     function _hookAddr(uint256 tag) internal pure returns (address) {
         return address(uint160(tag << 144) | 2752);

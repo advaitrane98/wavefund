@@ -286,7 +286,10 @@ contract QuantumRoundTest is QuantumBase {
     }
 
     function test_settle_emergencyIgnoresSuppliedValueAndUsesMidpoint() public {
+        // an EXECUTED round: the vault recorded the trade, so the emergency path settles at the midpoint
         uint256 r = _p1Wins();
+        vm.prank(address(vault));
+        qr.markExecuted(r);
         vm.warp(qr.evaluationEnd(r) + qr.EMERGENCY_SETTLE_DELAY());
         vm.prank(stranger);
         qr.settle(r, R_MAX);

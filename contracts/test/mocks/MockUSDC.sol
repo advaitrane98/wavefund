@@ -48,3 +48,20 @@ contract BlocklistUSDC is ERC20 {
         return super.transfer(to, value);
     }
 }
+
+/// @dev Mintable ERC-20 with configurable decimals, for rejecting wrongly scaled bond/payment assets.
+contract MockDecimalsToken is ERC20 {
+    uint8 private immutable _dec;
+
+    constructor(uint8 dec_) ERC20("Mock Decimals", "mDEC") {
+        _dec = dec_;
+    }
+
+    function decimals() public view override returns (uint8) {
+        return _dec;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+}

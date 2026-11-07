@@ -7,7 +7,7 @@ import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.so
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ProposerRegistry} from "../src/ProposerRegistry.sol";
-import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {MockUSDC, MockDecimalsToken} from "./mocks/MockUSDC.sol";
 
 contract ProposerRegistryTest is Test {
     ProposerRegistry internal reg;
@@ -77,6 +77,27 @@ contract ProposerRegistryTest is Test {
     function test_Constructor_RevertsOnNoCodeUsdc() public {
         vm.expectRevert(abi.encodeWithSelector(ProposerRegistry.InvalidUSDC.selector, alice));
         new ProposerRegistry(admin, IERC20(alice));
+    }
+
+    function test_Constructor_RevertsOnNonSixDecimalBondToken() public {
+        uint8[4] memory bad = [0, 8, 18, 255];
+        for (uint256 i; i < bad.length; ++i) {
+            MockDecimalsToken t = new MockDecimalsToken(bad[i]);
+            vm.expectRevert(abi.encodeWithSelector(ProposerRegistry.InvalidUSDCDecimals.selector, bad[i]));
+            new ProposerRegistry(admin, IERC20(address(t)));
+        }
+    }
+
+    function test_Constructor_AcceptsSixDecimalBondToken() public {
+        MockDecimalsToken t = new MockDecimalsToken(6);
+        ProposerRegistry r = new ProposerRegistry(admin, IERC20(address(t)));
+        assertEq(address(r.usdc()), address(t));
+    }
+
+    function test_Constructor_NonErc20ContractRevertsWithoutDecimals() public {
+        // a contract with code but no decimals() cannot be a bond token: the constructor reverts
+        vm.expectRevert();
+        new ProposerRegistry(admin, IERC20(address(this)));
     }
 
     // ---- registerAgent ----

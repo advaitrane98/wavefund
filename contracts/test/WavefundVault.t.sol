@@ -294,30 +294,65 @@ contract WavefundVaultTest is QuantumBase {
     }
 
     // ------------------------------------------------------------------ slippage guard
-    function test_slippageBreach_rollsBackTheSwapAndCancelsTheRound() public {
+    function test_slippageBreach_revertsTheWholeCallAndLeavesStateUntouched() public {
         uint256 r = _winner1Round();
         _requestDeposit(alice, 5_000e6);
         _price(1500e8); // oracle says tETH is cheap, pool still quotes 2000: buying is >5% worse than the oracle
         uint256 usdcBefore = vault.totalVaultUsdc();
         uint256 tethBefore = vault.totalVaultTEth();
         uint256 poolBefore = usdc.balanceOf(address(pm));
-        vm.expectEmit(true, false, false, false, address(vault));
-        emit WavefundVault.TradeCancelled(r);
-        _execute(r, 6000);
+        vm.prank(keeper);
+        vm.expectPartialRevert(WavefundVault.SlippageBreached.selector);
+        vault.executeTrade(r, 6000);
         assertEq(vault.totalVaultUsdc(), usdcBefore, "swap rolled back");
         assertEq(vault.totalVaultTEth(), tethBefore);
         assertEq(usdc.balanceOf(address(pm)), poolBefore);
         assertEq(vault.queuedDepositsUsdc(), 5_000e6, "flows were rolled back too and stay queued");
+        assertEq(vault.depositRequest(alice), 5_000e6);
+        assertEq(vault.currentEpoch(), 0);
         assertEq(vault.balanceOf(alice), 0);
+        (, bool executed,, bool cancelled) = _state(r);
+        assertFalse(executed);
+        assertFalse(cancelled, "a slippage revert does not cancel the round");
+        assertEq(uint256(_roundStatus(r)), uint256(RoundStatus.Collapsed));
+        assertFalse(qr.roundExecuted(r));
+        // an unexecuted round cannot be reported
+        vm.expectRevert(abi.encodeWithSelector(WavefundVault.NotExecuted.selector, r));
+        vault.reportReturn(r);
+    }
+
+    function test_slippageBreach_keeperCanRetryOnceTheOracleRecovers() public {
+        uint256 r = _winner1Round();
+        _requestDeposit(alice, 5_000e6);
+        _price(1500e8);
+        _execute_expectSlippage(r);
+        _price(2000e8);
+        _execute(r, 6000);
+        (, bool executed,, bool cancelled) = _state(r);
+        assertTrue(executed);
+        assertFalse(cancelled);
+        assertEq(vault.queuedDepositsUsdc(), 0, "queue processed on the retry");
+        assertEq(vault.currentEpoch(), 1);
+    }
+
+    function test_slippageBreach_cancelStaysPermissionlessAfterEvaluationEndAndRedeemsAtPar() public {
+        uint256 r = _winner1Round();
+        _requestDeposit(alice, 5_000e6);
+        _price(1500e8);
+        _execute_expectSlippage(r);
+        vm.warp(qr.evaluationEnd(r));
+        vm.prank(stranger);
+        vault.cancelUnexecutedRound(r);
         (, bool executed,, bool cancelled) = _state(r);
         assertFalse(executed);
         assertTrue(cancelled);
         assertEq(uint256(_roundStatus(r)), uint256(RoundStatus.Cancelled));
-        // redeems at par, and a cancelled round can neither be traded again nor reported
+        assertEq(vault.queuedDepositsUsdc(), 5_000e6, "vault flows still queued for a later round");
         uint256 before = usdc.balanceOf(alice);
         vm.prank(alice);
         qr.redeem(r);
-        assertEq(usdc.balanceOf(alice) - before, 100e6);
+        assertEq(usdc.balanceOf(alice) - before, 100e6, "par redemption");
+        _price(2000e8);
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(WavefundVault.AlreadyProcessed.selector, r));
         vault.executeTrade(r, 6000);
@@ -325,10 +360,18 @@ contract WavefundVaultTest is QuantumBase {
         vault.reportReturn(r);
     }
 
+    function _execute_expectSlippage(uint256 r) internal {
+        vm.prank(keeper);
+        vm.expectPartialRevert(WavefundVault.SlippageBreached.selector);
+        vault.executeTrade(r, 6000);
+    }
+
     function test_nextRoundCanOpenAfterACancellation() public {
         uint256 r = _winner1Round();
         _price(1500e8);
-        _execute(r, 6000);
+        _execute_expectSlippage(r);
+        vm.warp(qr.evaluationEnd(r));
+        vault.cancelUnexecutedRound(r);
         vm.prank(alice);
         qr.redeem(r);
         _price(2000e8);
@@ -346,9 +389,9 @@ contract WavefundVaultTest is QuantumBase {
         vault.reportReturn(r);
 
         uint256 end = qr.evaluationEnd(r);
-        (, uint256 lastUpdate) = oracle.latestPrice();
         vm.warp(end);
-        vm.expectRevert(abi.encodeWithSelector(WavefundVault.OracleNotUpdated.selector, lastUpdate, end));
+        // no observation at or after evaluationEnd exists yet (the latest one predates it)
+        vm.expectRevert(abi.encodeWithSelector(WavefundVault.OracleNotUpdated.selector, 0, end));
         vault.reportReturn(r);
 
         // blocked while the round awaits its report
@@ -497,16 +540,12 @@ contract WavefundVaultTest is QuantumBase {
         uint256 r = _winner1Round();
         _execute(r, 6000);
         uint256 end = qr.evaluationEnd(r);
-        vm.warp(end);
-        _price(2000e8);
-        vm.warp(end + 6 minutes);
-        vm.expectPartialRevert(WavefundVault.OracleStale.selector);
-        vault.reportReturn(r);
+        // the only observation at/after evaluationEnd lands after the report window: it cannot be used
         vm.warp(end + vault.REPORT_WINDOW() + 1);
         _price(2000e8);
         vm.expectRevert(abi.encodeWithSelector(WavefundVault.ReportWindowClosed.selector, r));
         vault.reportReturn(r);
-        // missed window: the round's emergency settle takes over (midpoint)
+        // missed window: the round's emergency settle takes over (midpoint, since the round was executed)
         vm.warp(end + qr.EMERGENCY_SETTLE_DELAY());
         vm.prank(stranger);
         qr.settle(r, 0);

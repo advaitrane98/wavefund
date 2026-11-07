@@ -11,6 +11,7 @@ import {IWaveHook} from "../src/interfaces/IWaveHook.sol";
 import {WaveV4ProposalMarket} from "../src/WaveV4ProposalMarket.sol";
 import {ProposalTokens} from "../src/ProposalTokens.sol";
 import {WaveBase} from "./WaveBase.sol";
+import {MockQuantumRound} from "./mocks/MockQuantumRound.sol";
 
 /// @notice Wiring, seeding, views, TWAP snapshot and finalize behaviour of the adapter.
 contract WaveV4ProposalMarketTest is WaveBase {
@@ -43,10 +44,11 @@ contract WaveV4ProposalMarketTest is WaveBase {
     function test_OwnershipMovesOnlyAfterBothWires_RoundFirst() public {
         WaveV4ProposalMarket a = _fresh();
         address h = address(_deployHookAt(_hookAddr(0x5001), address(a)));
-        a.setQuantumRound(address(qr));
+        MockQuantumRound r = _roundFor(a);
+        a.setQuantumRound(address(r));
         assertEq(a.owner(), address(this), "still deployer after one wire");
         a.setWaveHook(h);
-        assertEq(a.owner(), address(qr), "handed to round after both");
+        assertEq(a.owner(), address(r), "handed to round after both");
     }
 
     function test_OwnershipMovesOnlyAfterBothWires_HookFirst() public {
@@ -54,20 +56,58 @@ contract WaveV4ProposalMarketTest is WaveBase {
         address h = address(_deployHookAt(_hookAddr(0x5002), address(a)));
         a.setWaveHook(h);
         assertEq(a.owner(), address(this));
-        a.setQuantumRound(address(qr));
-        assertEq(a.owner(), address(qr));
+        MockQuantumRound r = _roundFor(a);
+        a.setQuantumRound(address(r));
+        assertEq(a.owner(), address(r));
     }
 
     function test_SetQuantumRound_Reverts() public {
         WaveV4ProposalMarket a = _fresh();
         vm.expectRevert(WaveV4ProposalMarket.ZeroAddress.selector);
         a.setQuantumRound(address(0));
+        MockQuantumRound r = _roundFor(a);
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
-        a.setQuantumRound(address(qr));
-        a.setQuantumRound(address(qr));
+        a.setQuantumRound(address(r));
+        a.setQuantumRound(address(r));
         vm.expectRevert(WaveV4ProposalMarket.AlreadyWired.selector);
         a.setQuantumRound(address(0xBEEF));
+    }
+
+    function test_SetQuantumRound_RejectsEoaAndLeavesWiringOpen() public {
+        WaveV4ProposalMarket a = _fresh();
+        vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.InvalidQuantumRound.selector, stranger));
+        a.setQuantumRound(stranger);
+        vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.InvalidQuantumRound.selector, address(0xBEEF)));
+        a.setQuantumRound(address(0xBEEF));
+        assertEq(a.quantumRound(), address(0), "nothing wired");
+        // a proper controller can still be wired afterwards
+        a.setQuantumRound(address(_roundFor(a)));
+        assertTrue(a.quantumRound() != address(0));
+    }
+
+    function test_SetQuantumRound_RejectsContractWithoutMarketGetter() public {
+        WaveV4ProposalMarket a = _fresh();
+        // the test contract has code but no `market()` function
+        vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.InvalidQuantumRound.selector, address(this)));
+        a.setQuantumRound(address(this));
+        // a different contract with code and no market() (the pool manager)
+        vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.InvalidQuantumRound.selector, address(pm)));
+        a.setQuantumRound(address(pm));
+        assertEq(a.quantumRound(), address(0));
+    }
+
+    function test_SetQuantumRound_RejectsControllerBoundToAnotherMarket() public {
+        WaveV4ProposalMarket a = _fresh();
+        // `qr` is bound to the harness adapter, not to `a`
+        vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.QuantumRoundMarketMismatch.selector, address(adapter)));
+        a.setQuantumRound(address(qr));
+        // a controller whose market is unset reports address(0)
+        MockQuantumRound unset = new MockQuantumRound(tokens);
+        vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.QuantumRoundMarketMismatch.selector, address(0)));
+        a.setQuantumRound(address(unset));
+        assertEq(a.quantumRound(), address(0));
+        assertEq(a.owner(), address(this), "ownership untouched");
     }
 
     function test_SetWaveHook_Reverts() public {
@@ -146,7 +186,9 @@ contract WaveV4ProposalMarketTest is WaveBase {
     // ------------------------------------------------------------------ seeding
     function test_SeedRequiresCompleteWiring() public {
         WaveV4ProposalMarket a = _fresh();
-        a.setQuantumRound(address(this));
+        MockQuantumRound r = _roundFor(a);
+        a.setQuantumRound(address(r));
+        vm.prank(address(r));
         vm.expectRevert(WaveV4ProposalMarket.WiringIncomplete.selector);
         a.seedLiquidity(R, P, 1);
     }

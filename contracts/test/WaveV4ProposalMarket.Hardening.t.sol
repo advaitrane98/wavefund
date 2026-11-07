@@ -103,7 +103,10 @@ contract WaveV4ProposalMarketHardeningTest is WaveBase {
 
         // not fully wired (no hook): WiringIncomplete wins over the decimals guard
         WaveV4ProposalMarket half = new WaveV4ProposalMarket(pm, s.tokens, address(this));
-        half.setQuantumRound(address(this));
+        MockQuantumRound halfRound = new MockQuantumRound(s.tokens);
+        halfRound.setMarket(half);
+        half.setQuantumRound(address(halfRound));
+        vm.prank(address(halfRound));
         vm.expectRevert(WaveV4ProposalMarket.WiringIncomplete.selector);
         half.seedLiquidity(R, P, 1);
     }
@@ -139,14 +142,15 @@ contract WaveV4ProposalMarketHardeningTest is WaveBase {
     function test_SetWaveHook_MismatchDoesNotBlockCompletingWiring() public {
         IPoolManager otherPm = IPoolManager(address(new PoolManager(address(this))));
         WaveV4ProposalMarket a = new WaveV4ProposalMarket(pm, tokens, address(this));
-        a.setQuantumRound(address(qr));
+        MockQuantumRound r = _roundFor(a);
+        a.setQuantumRound(address(r));
         address foreign = _hookAddr(0x6203);
         deployCodeTo("WaveHook.sol:WaveHook", abi.encode(otherPm, address(a)), foreign);
         vm.expectRevert(abi.encodeWithSelector(WaveV4ProposalMarket.HookPoolManagerMismatch.selector, address(otherPm)));
         a.setWaveHook(foreign);
         assertEq(a.owner(), address(this), "handoff did not happen");
         a.setWaveHook(address(_deployHookAt(_hookAddr(0x6204), address(a))));
-        assertEq(a.owner(), address(qr), "handoff after the right hook");
+        assertEq(a.owner(), address(r), "handoff after the right hook");
     }
 
     function test_SetWaveHook_AdapterBindingIsCheckedBeforePoolManager() public {
