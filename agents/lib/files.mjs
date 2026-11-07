@@ -24,14 +24,23 @@ export function upsertEnv(file, key, value) {
   return 'added';
 }
 
+// agents/agents.json is shared with the frontend: { chainId, agents: [{ id, name, type, description, address, wallet }] }.
+// Internally the runtime uses `key` (underscores) where the file uses `id` (hyphens), e.g. mean_reversion / mean-reversion.
+export const idOf = (key) => key.replace(/_/g, '-');
+export const keyOf = (id) => String(id).replace(/-/g, '_');
+export const WALLET_KIND = 'circle-developer-controlled';
+
 export function readAgentsFile(file = AGENTS_FILE) {
   if (!fs.existsSync(file)) return AGENT_DEFS.map((d) => ({ ...publicFields(d), address: null }));
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const list = Array.isArray(json) ? json : json.agents ?? [];
+  return list.map((a) => ({ key: a.key ?? keyOf(a.id), name: a.name, type: a.type, description: a.description, address: a.address ?? null }));
 }
 
 export function writeAgentsFile(records, file = AGENTS_FILE) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(records, null, 2)}\n`);
+  const agents = records.map((r) => ({ id: idOf(r.key), name: r.name, type: r.type, description: r.description, address: r.address, wallet: WALLET_KIND }));
+  fs.writeFileSync(file, `${JSON.stringify({ chainId: 5042002, agents }, null, 2)}\n`);
 }
 
 /** Joins the static definitions with the addresses in agents.json. */

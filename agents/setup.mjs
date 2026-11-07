@@ -3,6 +3,7 @@
 // public addresses to agents/agents.json and the wallet IDs to .env. Existing IDs are re-used, never duplicated.
 // Errors name Circle's HTTP status and error code but never credentials.
 import { pathToFileURL } from 'node:url';
+import { getAddress } from 'viem';
 import { AGENT_DEFS, CHAIN_NAME, WALLET_SET_ENV, WALLET_SET_NAME, publicFields } from './lib/config.mjs';
 import { AGENTS_FILE, ENV_FILE, readAgentsFile, upsertEnv, writeAgentsFile } from './lib/files.mjs';
 import { CircleError, createCircleClient, uuidFrom } from './lib/signers/circle.mjs';
@@ -68,12 +69,14 @@ export async function runSetup({ client, env = process.env, envFile = ENV_FILE, 
     assertNotOperator(wallet.address, env);
     summary.addresses[def.key] = wallet.address;
     const i = records.findIndex((r) => r.key === def.key);
-    const next = { ...publicFields(def), address: wallet.address };
+    // Keep the name and description already published in agents.json (the frontend shows them); only the address is ours to set.
+    const prev = i >= 0 ? records[i] : null;
+    const next = { ...publicFields(def), name: prev?.name ?? def.name, description: prev?.description ?? def.description, address: getAddress(wallet.address) };
     if (i >= 0) records[i] = next;
     else records.push(next);
   }
   writeAgentsFile(AGENT_DEFS.map((d) => records.find((r) => r.key === d.key)), agentsFile);
-  say(`wrote ${AGENT_DEFS.length} addresses to agents/agents.json`);
+  say(`wrote ${AGENT_DEFS.length} addresses to agents/agents.json (shared with the frontend)`);
   say(`created: ${summary.created.join(', ') || 'none'}; reused: ${summary.reused.join(', ') || 'none'}`);
   return summary;
 }

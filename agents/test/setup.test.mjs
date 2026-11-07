@@ -48,10 +48,13 @@ test('first run creates one wallet set and five EOAs, writes addresses to agents
   assert.equal(client.state.sets, 1);
   assert.equal(client.state.createCalls, 5);
   assert.equal(out.created.length, 5);
-  const agents = JSON.parse(fs.readFileSync(ctx.agentsFile, 'utf8'));
-  assert.deepEqual(agents.map((a) => a.key), AGENT_DEFS.map((d) => d.key));
+  const file = JSON.parse(fs.readFileSync(ctx.agentsFile, 'utf8'));
+  assert.equal(file.chainId, 5042002);
+  const agents = file.agents;
+  assert.deepEqual(agents.map((a) => a.id), AGENT_DEFS.map((d) => d.key.replace(/_/g, '-')));
   for (const a of agents) {
-    assert.match(a.address, /^0x[0-9]{40}$/);
+    assert.match(a.address, /^0x[0-9a-fA-F]{40}$/);
+    assert.equal(a.wallet, 'circle-developer-controlled');
     assert.ok(a.name && a.type && a.description);
     assert.equal(a.walletId, undefined, 'wallet IDs stay out of agents.json');
   }
@@ -123,4 +126,14 @@ test('upsertEnv adds, replaces an empty value and leaves equal values alone', ()
   assert.equal(upsertEnv(f, 'B', '2'), 'updated');
   assert.equal(upsertEnv(f, 'B', '2'), 'unchanged');
   assert.equal(fs.readFileSync(f, 'utf8'), 'A=1\nB=2\nC=3\n');
+});
+
+test('setup keeps names and descriptions already published in agents.json and only sets the address', async () => {
+  const ctx = fresh();
+  fs.writeFileSync(ctx.agentsFile, JSON.stringify({ chainId: 5042002, agents: [{ id: 'mean-reversion', name: 'Mean Reversion', type: 'proposer', description: 'Published text.', address: null, wallet: 'circle-developer-controlled' }] }));
+  await runSetup({ client: fakeCircle(), ...ctx });
+  const mr = JSON.parse(fs.readFileSync(ctx.agentsFile, 'utf8')).agents.find((a) => a.id === 'mean-reversion');
+  assert.equal(mr.name, 'Mean Reversion');
+  assert.equal(mr.description, 'Published text.');
+  assert.match(mr.address, /^0x/);
 });
